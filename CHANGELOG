@@ -1,0 +1,44 @@
+------------------------------------------------------------------------------------------------------------------------
+The purpose of this changelog is to document new features and breaking changes that are most likely to affect developers
+------------------------------------------------------------------------------------------------------------------------
+
+--- v0.1.6 (2025.01.05) ---
+
+- Move record creation/deletion functionality into the main interface
+- Simplified URL path structure and rename the main endpoint to /interface
+- Split old sync-call into separate sync-call and sync-http functions
+
+--- v0.1.5 (2024.11.19) ---
+
+- Convert RocksDB architecture from four separate DBs to a single DB with four column families
+
+--- v0.1.4 (2024.08.06) ---
+
+- Add ability to bootstrap with a default record and interface
+
+--- v0.1.3 (2024.06.25) ---
+
+- Implement sync-pair type
+- Deprecate sync-bind and sync-find
+
+--- v0.1.2 (2024.06.11) ---
+
+- Forbid dangling Merkle tree leaves
+- Add garbage collection funtionality
+
+--- v0.1.1 (2024.05.11) ---
+
+- Add on-disk persistence functionality with RocksDB
+
+--- v0.1.0 (0.2024.04.22) ---
+
+- Add ability to send message to between records
+- Add ability to make external http requests
+- Flatten /record/<hex> endpoint to return the raw lisp expression rather than JSON
+- Removed the "mutated" feedback information
+    - In the case of concurrent access, the Journal will keep trying to evaluate the expression until it either success or fails
+- The /lisp folder now contains several useful interfaces
+
+--- v0.0.0 (2024.02.19) ---
+
+- Minimum viable code complete
