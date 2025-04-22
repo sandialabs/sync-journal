@@ -20,7 +20,7 @@ pub fn setup() -> (String, impl Fn(&str, &str)) {
         record.clone(),
 	    move | expression, expected | {
 	        let result = JOURNAL.evaluate(format!(
-                "(sync-call '{} (hex-string->byte-vector \"{}\")))",
+                "(sync-call '{} #t (hex-string->byte-vector \"{}\")))",
                 expression,
                 record,
             ).as_str());
@@ -36,7 +36,7 @@ pub fn setup() -> (String, impl Fn(&str, &str)) {
 #[test]
 fn test_self() {
     let (_record, assert1) = setup();
-    assert1("(sync-call '(+ 2 2))", "4");
+    assert1("(sync-call '(+ 2 2) #t)", "4");
 }
 
 #[test]
@@ -45,16 +45,16 @@ fn test_record() {
     let (record2, _assert2) = setup();
 
     assert1(
-	    format!("(sync-call '(+ 2 2) (hex-string->byte-vector \"{}\"))", record2).as_str(),
+	    format!("(sync-call '(+ 2 2) #t (hex-string->byte-vector \"{}\"))", record2).as_str(),
 	    "4",
     );
     assert1(
-	    format!("(sync-call ''(+ 2 2) (hex-string->byte-vector \"{}\"))", record2).as_str(),
+	    format!("(sync-call ''(+ 2 2) #t (hex-string->byte-vector \"{}\"))", record2).as_str(),
 	    "(+ 2 2)",
     );
     assert1(
 	    format!(
-	        "(sync-call '{} (hex-string->byte-vector \"{}\"))",
+	        "(sync-call '{} #t (hex-string->byte-vector \"{}\"))",
 	        "(begin (define *sync-state* (sync-cons (sync-car *sync-state*) #u(2))) #t)",
 	        record2,
 	    ).as_str(),
@@ -84,7 +84,7 @@ fn test_http() {
 
     assert(
 	    format!(
-	        "(sync-http 'get \"{}/hello\")",
+	        "(byte-vector->string (sync-http 'get \"{}/hello\"))",
 	        url,
 	    ).as_str(),
 	    "\"hello, world!\"",
@@ -92,7 +92,7 @@ fn test_http() {
 
     assert(
 	    format!(
-	        "(sync-http 'post \"{}/hello\" \"world\")",
+	        "(byte-vector->string (sync-http 'post \"{}/hello\" \"world\"))",
 	        url,
 	    ).as_str(),
 	    "\"greeted\"",

@@ -2,6 +2,15 @@
 The purpose of this changelog is to document new features and breaking changes that are most likely to affect developers
 ------------------------------------------------------------------------------------------------------------------------
 
+--- v1.1 (2025.04.22) ---
+
+- Move record creation/deletion functionality into the main interface
+- Simplified URL path structure and rename the main endpoint to /interface
+- Split old sync-call into separate sync-call and sync-http functions
+- expand sync-call to sync-call, sync-http, and sync-remote
+- add support for concurrency (via sync-call)
+- add --evaluate flag for evaluating single expressions
+
 --- v1.0 (2025.04.21) ---
 
 - Initial open-source release

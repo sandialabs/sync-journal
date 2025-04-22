@@ -106,19 +106,19 @@ impl Journal {
     }
 
     fn evaluate_record(&self, record: Word, query: &str) -> String {
-        let genesis_func = PERSISTOR.leaf_get(
-            PERSISTOR.branch_get(
-                PERSISTOR.root_get(record).unwrap()
-            ).unwrap().0
-        ).unwrap().to_vec();
+        loop {
+            let genesis_func = PERSISTOR.leaf_get(
+                PERSISTOR.branch_get(
+                    PERSISTOR.root_get(record).unwrap()
+                ).unwrap().0
+            ).unwrap().to_vec();
 
-        let genesis_str = String::from_utf8_lossy(&genesis_func);
+            let genesis_str = String::from_utf8_lossy(&genesis_func);
 
-        let state_old = PERSISTOR.root_get(record).unwrap();
+            let state_old = PERSISTOR.root_get(record).unwrap();
 
-        let record_temp = PERSISTOR.root_temp(state_old).unwrap();
+            let record_temp = PERSISTOR.root_temp(state_old).unwrap();
 
-        let result = {
             let state_str = format!(
                 "#u({})",
                 state_old.iter().map(|&num| num.to_string()).collect::<Vec<String>>().join(" "),
@@ -142,6 +142,7 @@ impl Journal {
                     primitive_s7_sync_delete(),
                     primitive_s7_sync_all(),
                     primitive_s7_sync_call(),
+                    primitive_s7_sync_remote(),
                     primitive_s7_sync_http(),
                 ],
             );
@@ -188,7 +189,10 @@ impl Journal {
             };
 
             match state_old == state_new {
-                true => output,
+                true => {
+                    PERSISTOR.root_delete(record_temp).unwrap();
+                    return output
+                },
                 false => match state_old == PERSISTOR.root_get(record).unwrap() {
                     true => {
                         fn recurse(source: &MemoryPersistor, node: Word) -> Result<(), PersistorAccessError> {
@@ -217,11 +221,14 @@ impl Journal {
                             match recurse(&persistor, state_new) {
                                 Ok(_) => {
                                     match PERSISTOR.root_set(record, state_old, state_new) {
-                                        Ok(_) => output,
+                                        Ok(_) => {
+                                            PERSISTOR.root_delete(record_temp).unwrap();
+                                            return output
+                                        },
                                         Err(_) => {
                                             info!("Rerunning query due to concurrency collision: {}", query);
                                             drop(lock);
-                                            self.evaluate_record(record, query)
+                                            continue
                                         }
                                     }
                                 },
@@ -233,13 +240,11 @@ impl Journal {
                     },
                     false => {
                         info!("Rerunning query due to concurrency collision: {}", query);
-                        self.evaluate_record(record, query)
+                        continue
                     }
                 }
             }
-        };
-        PERSISTOR.root_delete(record_temp).unwrap();
-        result
+        }
     }
 }
 
@@ -393,13 +398,21 @@ fn primitive_s7_sync_null() -> Primitive {
 
 fn primitive_s7_sync_is_null() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let word = sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)));
-        for i in 0..SIZE {
-            if word[i] != 0 {
-                return s7::s7_make_boolean(sc, false);
-            }
+        match sync_is_pair(s7::s7_car(args)) {
+            false => s7::s7_wrong_type_arg_error(
+                sc, c"sync-null?".as_ptr(), 1, s7::s7_car(args),
+                c"a sync-pair".as_ptr(),
+            ),
+            true => {
+                let word = sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)));
+                for i in 0..SIZE {
+                    if word[i] != 0 {
+                        return s7::s7_make_boolean(sc, false);
+                    }
+                }
+                s7::s7_make_boolean(sc, true)
+            },
         }
-        s7::s7_make_boolean(sc, true)
     }
 
     Primitive::new(
@@ -412,10 +425,20 @@ fn primitive_s7_sync_is_null() -> Primitive {
 
 fn primitive_s7_sync_pair_to_bytes() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let word = sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)));
-        let bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
-        for i in 0..SIZE { s7::s7_byte_vector_set(bv, i as i64, word[i]); }
-        bv
+        match sync_is_pair(s7::s7_car(args)) {
+            false => {
+                s7::s7_wrong_type_arg_error(
+                    sc, c"sync-pair->byte-vector".as_ptr(), 1, s7::s7_car(args),
+                    c"a sync-pair".as_ptr(),
+                )
+            }
+            true => {
+                let word = sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)));
+                let bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
+                for i in 0..SIZE { s7::s7_byte_vector_set(bv, i as i64, word[i]); }
+                bv
+            },
+        }
     }
 
     Primitive::new(
@@ -624,15 +647,30 @@ fn primitive_s7_sync_all() -> Primitive {
 fn primitive_s7_sync_call() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         let message_expr = s7::s7_car(args);
+        let blocking = s7::s7_cadr(args);
 
-        let record = match s7::s7_is_null(sc, s7::s7_cdr(args)) {
+        if !s7::s7_is_boolean(blocking) {
+            return s7::s7_wrong_type_arg_error(
+                sc, c"sync-call".as_ptr(), 2, blocking,
+                c"a boolean".as_ptr(),
+            )
+        }
+
+        let record = match s7::s7_is_null(sc, s7::s7_cddr(args)) {
             true => {
                 let session = SESSIONS.lock().unwrap();
                 session.get(&(sc as usize)).unwrap().record
             },
             false => {
-                let bv = s7::s7_cadr(args);
+                let bv = s7::s7_caddr(args);
                 // check the input arguments
+                if !s7::s7_is_byte_vector(bv) || s7::s7_vector_length(bv) as usize != SIZE {
+                    return s7::s7_wrong_type_arg_error(
+                        sc, c"sync-call".as_ptr(), 3, bv,
+                        c"a hash-sized byte-vector".as_ptr(),
+                    )
+                }
+
                 if !s7::s7_is_byte_vector(bv) || s7::s7_vector_length(bv) as usize != SIZE {
                     return s7::s7_wrong_type_arg_error(
                         sc, c"sync-call".as_ptr(), 2, bv,
@@ -650,9 +688,16 @@ fn primitive_s7_sync_call() -> Primitive {
             Ok(_) => {
                 let message = CStr::from_ptr(s7::s7_object_to_c_string(sc, message_expr))
                     .to_str().unwrap().to_owned();
-                let result = JOURNAL.evaluate_record(record, message.as_str());
-                let c_result = CString::new(format!("(quote {})", result)).unwrap();
-                s7::s7_eval_c_string(sc, c_result.as_ptr())
+                if s7::s7_boolean(sc, blocking) {
+                    let result = JOURNAL.evaluate_record(record, message.as_str());
+                    let c_result = CString::new(format!("(quote {})", result)).unwrap();
+                    s7::s7_eval_c_string(sc, c_result.as_ptr())
+                } else {
+                    thread::spawn(move || {
+                        JOURNAL.evaluate_record(record, message.as_str());
+                    });
+                    s7::s7_make_boolean(sc, true)
+                }
             }
             Err(_) => {
                 s7::s7_error(
@@ -670,8 +715,8 @@ fn primitive_s7_sync_call() -> Primitive {
     Primitive::new(
         code,
         c"sync-call",
-        c"(sync-call query id) query the provided record ID or self if ID not provided",
-        1, 1, false,
+        c"(sync-call query blocking? id) query the provided record ID or self if ID not provided",
+        2, 1, false,
     )
 }
 
@@ -694,20 +739,24 @@ fn primitive_s7_sync_http() -> Primitive {
             match method.to_lowercase() {
                 method if method == "get" => {
                     reqwest::blocking::get(&url[1..url.len() -1])
-                        .unwrap().text().unwrap()
+                        .unwrap().bytes().unwrap()
                 }
                 method if method == "post" => {
                     reqwest::blocking::Client::new()
                         .post(&url[1..url.len() -1])
                         .body(String::from(&body[1..body.len() -1]))
-                        .send().unwrap().text().unwrap()
+                        .send().unwrap().bytes().unwrap()
                 }
                 _ => {
                     panic!()
                 }
             }
         }).join() {
-            Ok(result) => string_to_s7(sc, result.as_str()),
+            Ok(vector) => {
+                let bv = s7::s7_make_byte_vector(sc, vector.len() as i64, 1, std::ptr::null_mut());
+                for i in 0..vector.len() { s7::s7_byte_vector_set(bv, i as i64, vector[i]); }
+                bv
+            }
             Err(_) => sync_error(sc),
         }
     }
@@ -717,6 +766,41 @@ fn primitive_s7_sync_http() -> Primitive {
         c"sync-http",
         c"(sync-http method url . data) make an http request where method is 'get or 'post",
         2, 2, false,
+    )
+}
+
+fn primitive_s7_sync_remote() -> Primitive {
+    unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
+        let obj2str = | obj | {
+            CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().unwrap().to_owned()
+        };
+
+        let url = obj2str(s7::s7_car(args));
+
+        let body = obj2str(s7::s7_cadr(args));
+
+        match thread::spawn(move || {
+            reqwest::blocking::Client::new()
+                .post(&url[1..url.len() -1])
+                .body(body)
+                .send().unwrap().bytes().unwrap()
+        }).join() {
+            Ok(bytes) => {
+                let mut vector = bytes.to_vec();
+                vector.insert(0, 39); // add quote character so that it evaluates correctly
+                vector.push(0);
+                let c_string = CString::from_vec_with_nul(vector).unwrap();
+                s7::s7_eval_c_string(sc, c_string.as_ptr())
+            }
+            Err(_) => sync_error(sc),
+        }
+    }
+
+    Primitive::new(
+        code,
+        c"sync-remote",
+        c"(sync-remote url data) make a post http request with the data payload)",
+        2, 0, false,
     )
 }
 

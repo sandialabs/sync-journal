@@ -1,3 +1,5 @@
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use log::info;
 use std::net::{IpAddr, Ipv6Addr};
 use rocket::data::{Limits, ToByteUnit};
@@ -5,6 +7,8 @@ use rocket::{get, post, routes};
 use rocket::response::content::RawHtml;
 use rocket::config::Config as RocketConfig;
 use journal_sdk::{Config, JOURNAL};
+
+const MICRO: f64 = 1000000.0;
 
 #[rocket::main]
 async fn main() {
@@ -77,14 +81,42 @@ async fn main() {
         JOURNAL.evaluate(query)
     }
 
+    if &config.boot != "" {
+        let result = JOURNAL.evaluate(&config.boot);
+        info!("Boot: {}", result);
+    }
+
+    if &config.evaluate != "" {
+        let result = JOURNAL.evaluate(&config.evaluate);
+        println!("{}", result);
+        return
+    }
+
     let mut rocket_config = RocketConfig::default();
     rocket_config.port = config.port;
     rocket_config.address = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0));
     rocket_config.limits = Limits::new().limit("string", 1_i32.mebibytes());
 
-    if &config.boot != "" {
-        let result = JOURNAL.evaluate(&config.boot);
-        info!("Boot result: {}", result);
+    let period = 2_f64.powi(config.periodicity);
+
+    if config.step != "" {
+        thread::spawn(move || {
+            let mut step = 0;
+            let start = ((
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64 /
+                    (period * MICRO)
+            ).ceil() * (period * MICRO)) as u128;
+            loop {
+                let until = start + step * (period * MICRO) as u128;
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros();
+                if now < until {
+                    thread::sleep(Duration::from_micros((until - now).try_into().unwrap()));
+                }
+                let result = JOURNAL.evaluate(&config.step);
+                info!("Step ({:.6}): {}", until as f64 / MICRO, result);
+                step += 1;
+            }
+        });
     }
 
     let _ = rocket::build()

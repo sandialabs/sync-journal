@@ -9,7 +9,7 @@
          ;; --- verifiable map ---
 
          (define (nth-bit x n)
-	       (zero? (logand (byte-vector-ref (sync-pair->byte-vector x) (floor (/ n 8)))
+	       (zero? (logand (byte-vector-ref (sync-hash x) (floor (/ n 8)))
 			              (ash 1 (modulo n 8)))))
 
          (define (sync-caar x) (sync-car (sync-car x)))
@@ -22,7 +22,10 @@
 
          (define (sync-caddr x) (sync-car (sync-cdr (sync-cdr x))))
 
-         (define (sync-leaf? x) (and (not (sync-null? x)) (equal? (sync-car x) (sync-cdr x))))
+         (define (sync-null-pair? x)
+           (and (sync-pair? x) (sync-null? x)))
+
+         (define (sync-leaf? x) (and (not (sync-null-pair? x)) (equal? (sync-car x) (sync-cdr x))))
 
          (define (split-list items test)
 	       (let loop ((items (reverse items)) (a '()) (b '()))
@@ -41,27 +44,27 @@
 		            (pairs (if (and (> (length pairs) 1) (equal? (caar pairs) (caadr pairs))) (cdr pairs) pairs)))
 	           (cond
 	            ((= (length pairs) 0) node)
-	            ((and (= (length pairs) 1) (sync-null? node))
-	             (if (sync-null? (cdar pairs)) (sync-null)
+	            ((and (= (length pairs) 1) (sync-null-pair? node))
+	             (if (sync-null-pair? (cdar pairs)) (sync-null)
 		             (let ((leaf (sync-cons (caar pairs) (cdar pairs))))
 		               (sync-cons leaf leaf))))
 	            (else
 	             (let* ((split (split-list pairs (lambda (x) (nth-bit (car x) depth))))
-		                (left-old (if (sync-null? node) (sync-null) (sync-car node)))
-		                (right-old (if (sync-null? node) (sync-null) (sync-cdr node)))
+		                (left-old (if (sync-null-pair? node) (sync-null) (sync-car node)))
+		                (right-old (if (sync-null-pair? node) (sync-null) (sync-cdr node)))
 		                (left-new (recurse left-old (car split) (+ depth 1)))
 		                (right-new (recurse right-old (cdr split) (+ depth 1))))
 		           (cond
-		            ((and (sync-null? left-new) (sync-null? right-new)) (sync-null))
-		            ((and (sync-null? right-new) (sync-leaf? left-new)) left-new)
-		            ((and (sync-null? left-new) (sync-leaf? right-new)) right-new)
+		            ((and (sync-null-pair? left-new) (sync-null-pair? right-new)) (sync-null))
+		            ((and (sync-null-pair? right-new) (sync-leaf? left-new)) left-new)
+		            ((and (sync-null-pair? left-new) (sync-leaf? right-new)) right-new)
 		            (else (sync-cons left-new right-new)))))))))
 
          (define (sync-map-get root keys)
 	       (let recurse ((node root) (keys keys) (depth 0))
 	         (cond
 	          ((= (length keys) 0) '())
-	          ((sync-null? node)
+	          ((sync-null-pair? node)
 	           (let loop ((keys keys) (pairs '()))
 	             (map (lambda (x) (cons x (sync-null))) keys)))
 	          ((sync-leaf? node)
@@ -83,7 +86,7 @@
          (define (sync-map-all root)
 	       (let recurse ((node root))
 	         (cond
-	          ((sync-null? node) '())
+	          ((sync-null-pair? node) '())
 	          ((sync-leaf? node) (list (cons (sync-cadr node) (sync-cddr node))))
 	          (else (append (recurse (sync-car node)) (recurse (sync-cdr node)))))))
 
