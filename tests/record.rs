@@ -17,7 +17,7 @@ pub fn setup() -> impl Fn(&str, &str) {
 
     move | expression, expected | {
 	    let result = JOURNAL.evaluate(format!(
-            "(sync-call '{} (hex-string->byte-vector \"{}\"))",
+            "(sync-call '{} #t (hex-string->byte-vector \"{}\"))",
             expression,
             record,
         ).as_str());
@@ -106,7 +106,7 @@ fn test_rdf() {
     assert(&code, "\"Installed RDF interface\"");
     assert("(insert a b c)", "(a b c)");
     assert("(insert a b d)", "(a b d)");
-    assert("(select a b ())", "((a b d) (a b c))");
+    assert("(select a b ())", "((a b c) (a b d))");
     assert("(remove a b c)", "(a b c)");
     assert("(select a b ())", "((a b d))");
 }
