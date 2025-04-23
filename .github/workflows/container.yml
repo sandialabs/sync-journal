@@ -28,7 +28,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Download CI/CD
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v4
         with:
           name: ci-cd
       - name: Build Docker image

@@ -28,19 +28,19 @@ jobs:
       - name: Calculate version number
         run: |
           mkdir -p .ci-cd
-          cargo pkgid | cut -d '#' -f 2 > .ci-cd/version.txt
+          cargo pkgid | cut -d '@' -f 2 > .ci-cd/version.txt
       - name: Upload cargo
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: cargo
           path: .cargo
       - name: Upload target
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: target
           path: target
       - name: Upload CI/CD
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: ci-cd
           path: .ci-cd
