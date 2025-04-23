@@ -1,0 +1,46 @@
+name: Build
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: "build"
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y llvm-dev libclang-dev clang
+      - name: Install rust
+        uses: moonrepo/setup-rust@v1
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Run unit tests
+        run: |
+          cargo build --release
+      - name: Calculate version number
+        run: |
+          mkdir -p .ci-cd
+          cargo pkgid | cut -d '#' -f 2 > .ci-cd/version.txt
+      - name: Upload cargo
+        uses: actions/upload-artifact@v2
+        with:
+          name: cargo
+          path: .cargo
+      - name: Upload target
+        uses: actions/upload-artifact@v2
+        with:
+          name: target
+          path: target
+      - name: Upload CI/CD
+        uses: actions/upload-artifact@v2
+        with:
+          name: ci-cd
+          path: .ci-cd
