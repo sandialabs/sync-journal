@@ -13,8 +13,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      CARGO_HOME: ${{ github.workspace }}
     steps:
       - name: Install dependencies
         run: |
@@ -36,7 +34,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cargo
-          path: .cargo
+          path: /home/runner/cargo
       - name: Upload target
         uses: actions/upload-artifact@v4
         with:
