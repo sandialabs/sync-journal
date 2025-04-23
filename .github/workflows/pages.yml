@@ -3,11 +3,25 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [ "**" ]
-    pull_request:
-      branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Install dependencies
@@ -16,13 +30,17 @@ jobs:
           sudo apt install -y llvm-dev libclang-dev clang
       - name: Install rust
         uses: moonrepo/setup-rust@v1
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
-      - name: Run unit tests
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Create documents
         run: |
           cargo doc --no-deps
-      - name: Deploy to github pages
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.github_token }}
-          publish_dir: ./target/doc
+          path: './target/doc'
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
