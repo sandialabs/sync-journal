@@ -1,0 +1,104 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Welcome to the Synchronic Web Journal Software Development Kit! This repository contains technical documentation and code that operates the core of the synchronic web infrastructure. For an older higher-level overview, please see public whitepaper."><title>journal_sdk - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2" crossorigin href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-6c3ea77c.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="journal_sdk" data-themes="" data-resource-suffix="" data-rustdoc-version="1.86.0 (05f9846f8 2025-03-31)" data-channel="1.86.0" data-search-js="search-581efc7a.js" data-settings-js="settings-6dad6058.js" ><script src="../static.files/storage-3a5871a4.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-4d63596a.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-893ab5e7.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-6580c154.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="mobile-topbar"><button class="sidebar-menu-toggle" title="show sidebar"></button></nav><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../journal_sdk/index.html">journal_<wbr>sdk</a><span class="version">1.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#install" title="Install">Install</a></li><li><a href="#run" title="Run">Run</a><ul><li><a href="#commandline" title="Commandline">Commandline</a></li><li><a href="#other-actions" title="Other Actions">Other Actions</a></li></ul></li><li><a href="#use" title="Use">Use</a><ul><li><a href="#lisp-evaluation" title="Lisp Evaluation">Lisp Evaluation</a></li><li><a href="#synchronic-web-state" title="Synchronic Web State">Synchronic Web State</a></li></ul></li><li><a href="#disclaimer" title="Disclaimer">Disclaimer</a></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#statics" title="Statics">Statics</a></li><li><a href="#types" title="Type Aliases">Type Aliases</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer"></div><main><div class="width-limiter"><rustdoc-search></rustdoc-search><section id="main-content" class="content"><div class="main-heading"><h1>Crate <span>journal_sdk</span><button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/journal_sdk/lib.rs.html#1-885">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Welcome to the Synchronic Web Journal Software Development Kit!
+This repository contains technical documentation and code that operates the core of the synchronic web infrastructure.
+For an older higher-level overview, please see public <a href="https://arxiv.org/ftp/arxiv/papers/2301/2301.10733.pdf">whitepaper</a>.</p>
+<h2 id="install"><a class="doc-anchor" href="#install">§</a>Install</h2>
+<p>Please see the following two pages to install the build dependencies:</p>
+<ul>
+<li><a href="https://doc.rust-lang.org/cargo/getting-started/installation.html">Instructions</a> to install Rust and Cargo</li>
+<li><a href="https://rust-lang.github.io/rust-bindgen/requirements.html">Instructions</a> to install CLang for generating C/Rust bindings</li>
+</ul>
+<p>Currently, this code has only been confirmed to work on Linux, specifically, Windows Subsystem for Linux.
+However, there is no current reason to believe it won’t compile elsewhere.</p>
+<h2 id="run"><a class="doc-anchor" href="#run">§</a>Run</h2>
+<p>The recommended usage strategy for most users is the web server.
+Although the code can be run in any way that Rust/Cargo allows, there are useful ways for most developers:</p>
+<ul>
+<li>As a low-optimization single step for development:
+<ul>
+<li><code>$ cargo run</code></li>
+</ul>
+</li>
+<li>As a high-optimization two-step procedure for release:
+<ul>
+<li><code>$ cargo build --release</code></li>
+<li><code>$ ./target/release/journal-sdk</code></li>
+</ul>
+</li>
+</ul>
+<p>By default, the journal will run with an in-memory database only.
+To persist to disk, pass in the <code>--database &lt;database name&gt;</code> argument.</p>
+<p>If successful, there will be a Journal server running at the configured URL (default: http://localhost:4096)
+To interact with the Journal through the web browser:</p>
+<ol>
+<li>Navigate to <code>http://localhost:4096</code></li>
+<li>Click on <code>Interface</code></li>
+<li>Type in <code>(+ 2 2)</code> into the input box and press <code>evaluate</code></li>
+</ol>
+<p>If the interface correctly outputs the value <code>4</code>, then the Journal is functional.</p>
+<h3 id="commandline"><a class="doc-anchor" href="#commandline">§</a>Commandline</h3>
+<p>In addition to using the rudimentary browser interface, the HTTP endpoint can also be invoked using any standard commandline client, for instance:</p>
+<p><code>$ curl -X POST http://localhost:4096/interface -d "(+ 2 2)"</code></p>
+<h3 id="other-actions"><a class="doc-anchor" href="#other-actions">§</a>Other Actions</h3>
+<p>Here are other auxiliary actions that may be useful in the course of development:</p>
+<ul>
+<li>Enumerate and display configuration options
+<ul>
+<li><code>$ cargo run -- --help</code></li>
+</ul>
+</li>
+<li>Run all unit and doc comment tests:
+<ul>
+<li><code>$ cargo test</code></li>
+</ul>
+</li>
+<li>Generate Rust documentation
+<ul>
+<li><code>$ cargo doc --no-deps --open</code></li>
+</ul>
+</li>
+</ul>
+<h2 id="use"><a class="doc-anchor" href="#use">§</a>Use</h2>
+<p>The <code>interface</code> endpoint exposes an evaluator for executing arbitrary code in a Lisp dialect.
+Once the service deploys, all interaction with the Journal SDK should take place through this interface.
+The evaluator itself is stateless; all variables and computations are cleared between each invocation of the endpoint.
+However, the SDK provides a controlled ability to read and write persistent data to the backend database.
+By leveraging the functionality and workflow specified below, it is possible to create arbitrarily complex stateful interfaces that benefit from the same core cryptographic verifiability afforded by the Journal.</p>
+<h3 id="lisp-evaluation"><a class="doc-anchor" href="#lisp-evaluation">§</a>Lisp Evaluation</h3>
+<p>The Lisp dialect used for Synchronic Web code is a lightly modified version of s7 Scheme.
+All source code and documentation is available in the <a href="./external/s7">./external/s7</a> folder.
+Other basic modifcations include:</p>
+<ul>
+<li>Build flags found in <a href="./build.rs">./build.rs</a></li>
+<li>Blacklisted functions found in <a href="./evaluator.rs">./evaluator.rs</a></li>
+<li>Additional convenience functions found in <a href="./evaluator.rs">./evaluator.rs</a></li>
+</ul>
+<p>The following commands will be helpful in getting started:</p>
+<ul>
+<li>List all functions in the root environment: <code>(map car (rootlet))</code></li>
+<li>Display the docstring for a given function: <code>(help my-function-name)</code></li>
+</ul>
+<h3 id="synchronic-web-state"><a class="doc-anchor" href="#synchronic-web-state">§</a>Synchronic Web State</h3>
+<p>Synchronic Web Journals store all stateful information, which we call records, in the form of cryptographic binary trees.
+The SDK implements a set of functions in the <a href="./lib.rs">./lib.rs</a> file for working with records.
+These custom functions (and descriptions) are available in the root environment of the evaluator and are identifiable by their <code>sync-</code> prefix.
+Functionality includes:</p>
+<ul>
+<li>Management of records (binary hash trees)</li>
+<li>Usage of Lisp-inspired constructs (cons, car, cdr, etc.) to build and traverse binary hash trees</li>
+<li>Invocation of other records and generic endpoints</li>
+</ul>
+<p>There is only one structural constraint on the form of the record: for a record to be correctly handled by the SDK, the top-most left child must be a unicode bytes string encoding an s7 expression of the following form:</p>
+<p><code>(lambda (*sync-state* query) (cons ... *sync-state*))</code></p>
+<p>The <code>*sync-state*</code> parameter is the root node of the record while the <code>query</code> parameter is the expression provided through the <code>/interface</code> endpoint.
+The function returns a Lisp pair where the first item is the response to the <code>/inferface</code> call and the second item is the new root node.
+For example, the default function is the following:</p>
+<p><code>(lambda (*sync-state* query) (cons (eval query) *sync-state*))</code></p>
+<p>This function simply evaluates any user query.
+From this highly generic and permissive functionality, it is possible to construct arbitrarily specific and controlled interfaces.
+The <a href="./lisp">./lisp</a> folder provides some examples.</p>
+<h2 id="disclaimer"><a class="doc-anchor" href="#disclaimer">§</a>Disclaimer</h2>
+<p>In general, this software still undergoing development.
+Functionality and interfaces may change at any time.</p>
+<p>// test ci/cd</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Config.html" title="struct journal_sdk::Config">Config</a></dt><dt><a class="struct" href="struct.Journal.html" title="struct journal_sdk::Journal">Journal</a></dt><dd>Journals are the primary way that application developers
+interact with the synchronic web.</dd><dt><a class="struct" href="struct.JournalAccessError.html" title="struct journal_sdk::JournalAccessError">Journal<wbr>Access<wbr>Error</a></dt></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.NULL.html" title="constant journal_sdk::NULL">NULL</a></dt><dt><a class="constant" href="constant.SIZE.html" title="constant journal_sdk::SIZE">SIZE</a></dt><dd>Size, in bytes, of the global hash algorithm (currently SHA-256)</dd></dl><h2 id="statics" class="section-header">Statics<a href="#statics" class="anchor">§</a></h2><dl class="item-table"><dt><a class="static" href="static.JOURNAL.html" title="static journal_sdk::JOURNAL">JOURNAL</a></dt></dl><h2 id="types" class="section-header">Type Aliases<a href="#types" class="anchor">§</a></h2><dl class="item-table"><dt><a class="type" href="type.Word.html" title="type journal_sdk::Word">Word</a></dt><dd>Byte array describing a hash pointer (currently SHA-256)</dd></dl></section></div></main></body></html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["NULL","SIZE"],"static":["JOURNAL"],"struct":["Config","Journal","JournalAccessError"],"type":["Word"]};
