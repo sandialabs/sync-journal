@@ -11,8 +11,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
+    env:
+      CARGO_HOME: ${{ github.workspace }}
     steps:
       - name: Install dependencies
         run: |
@@ -22,11 +24,12 @@ jobs:
         uses: moonrepo/setup-rust@v1
       - name: Checkout code
         uses: actions/checkout@v4
-      - name: Run unit tests
+      - name: Build project
         run: |
           cargo build --release
       - name: Calculate version number
         run: |
+          echo $( cargo pkgid )
           mkdir -p .ci-cd
           cargo pkgid | cut -d '@' -f 2 > .ci-cd/version.txt
       - name: Upload cargo
