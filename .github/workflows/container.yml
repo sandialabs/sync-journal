@@ -20,7 +20,7 @@ jobs:
       uses: actions/checkout@v4
     - name: Build Docker image
       run: |
-        docker build . --file Dockerfile --tag journal-sdk:$(date +%s)
+        docker build . --file Dockerfile --tag ghcr.io/${{ github.repository }}/journal-sdk:latest
     - name: Push Docker image
       run: |
         docker push ghcr.io/${{ github.repository }}/journal-sdk:latest
