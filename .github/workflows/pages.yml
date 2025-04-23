@@ -1,0 +1,28 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [ "**" ]
+    pull_request:
+      branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y llvm-dev libclang-dev clang
+      - name: Install rust
+        uses: moonrepo/setup-rust@v1
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Run unit tests
+        run: |
+          cargo docs --no-deps
+      - name: Deploy to github pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.github_token }}
+          publish_dir: ./target/doc
