@@ -1,12 +1,8 @@
 name: Container
 
 on:
-  push:
-    branches: [ "**" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_run:
-    workflows: [ "Build" ]
+    workflows: [ "Test" ]
     types:
       - completed
 
