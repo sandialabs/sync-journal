@@ -56,11 +56,6 @@ jobs:
       - name: Checkout code
         # if: github.ref == 'refs/heads/main'
         uses: actions/checkout@v4
-      - name: Download CI/CD
-        # if: github.ref == 'refs/heads/main'
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-cd
       - name: Build Docker images
         # if: github.ref == 'refs/heads/main'
         run: |
