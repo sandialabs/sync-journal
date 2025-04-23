@@ -30,7 +30,7 @@ jobs:
       - name: Build project
         run: cargo build
       - name: Test project
-          cargo test
+        run: cargo test
       - name: Setup Pages
         if: github.ref == 'refs/heads/main'
         uses: actions/configure-pages@v5
