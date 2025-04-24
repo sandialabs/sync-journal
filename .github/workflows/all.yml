@@ -13,6 +13,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    permissions: write-all
     steps:
       - name: Install dependencies
         run: |
