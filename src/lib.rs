@@ -456,7 +456,7 @@ fn primitive_s7_sync_cons() -> Primitive {
             &session.get(&(sc as usize)).unwrap().persistor.clone()
         };
 
-        let handle_arg = | obj | {
+        let handle_arg = | obj, number | {
             if sync_is_pair(obj) {
                 Ok(sync_heap_read(s7::s7_c_object_value(obj)))
             } else if s7::s7_is_byte_vector(obj) {
@@ -470,13 +470,13 @@ fn primitive_s7_sync_cons() -> Primitive {
                 }
             } else {
                 Err(s7::s7_wrong_type_arg_error(
-                    sc, c"sync-cons".as_ptr(), 1, obj,
+                    sc, c"sync-cons".as_ptr(), number, obj,
                     c"a byte vector or a sync pair".as_ptr(),
                 ))
             }
         };
 
-        match (handle_arg(s7::s7_car(args)), handle_arg(s7::s7_cadr(args))) {
+        match (handle_arg(s7::s7_car(args), 1), handle_arg(s7::s7_cadr(args), 2)) {
             (Ok(left), Ok(right)) => match persistor.branch_set(left, right) {
                 Ok(pair) => s7::s7_make_c_object(sc, SYNC_PAIR_TAG, sync_heap_make(pair)),
                 Err(_) => sync_error(sc),
