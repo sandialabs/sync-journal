@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::ffi::{CString, CStr};
 use std::num::ParseIntError;
 use std::os::raw::c_char;
+use rand::RngCore;
+use rand::rngs::OsRng;
 use libc::free;
 
 type PrimitiveFunction = unsafe extern "C" fn(*mut s7_scheme, s7_pointer) -> s7_pointer;
@@ -82,6 +84,7 @@ impl Evaluator {
             primitive_byte_vector_to_hex_string(),
             primitive_expression_to_byte_vector(),
             primitive_byte_vector_to_expression(),
+            primitive_random_byte_vector(),
         ];
 
         primitives_.extend(primitives);
@@ -270,7 +273,35 @@ fn primitive_byte_vector_to_hex_string() -> Primitive {
     )
 }
 
-static REMOVE: [&'static CStr; 83] = [
+fn primitive_random_byte_vector() -> Primitive {
+    unsafe extern "C" fn code(sc: *mut s7_scheme, args: s7_pointer) -> s7_pointer {
+        let arg = s7_car(args);
+
+        if !s7_is_integer(arg) || s7_integer(arg) < 0 {
+            return s7_wrong_type_arg_error(
+                sc, c"random-byte-vector".as_ptr(), 1, arg,
+                c"a non-negative integer".as_ptr())
+        }
+
+        let length = s7_integer(arg);
+        let mut rng = OsRng;
+        let mut bytes = vec![0u8; length.try_into().unwrap()];
+        rng.fill_bytes(&mut bytes);
+
+        let bv = s7_make_byte_vector(sc, length as i64, 1, std::ptr::null_mut());
+        for i in 0..length as usize { s7_byte_vector_set(bv, i as i64, bytes[i]); }
+        bv
+    }
+
+    Primitive::new(
+        code,
+        c"random-byte-vector",
+        c"(random-byte-vector length) generate a securely random byte vector of the provided length",
+        1, 0, false,
+    )
+}
+
+static REMOVE: [&'static CStr; 84] = [
     c"*autoload*",
     c"*autoload-hook*",
     c"*cload-directory*",
@@ -337,6 +368,7 @@ static REMOVE: [&'static CStr; 83] = [
     c"port-line-number",
     c"port-position",
     c"profile-in",
+    c"random",
     c"read-char",
     c"read-string",
     c"read-byte",
