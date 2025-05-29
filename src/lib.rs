@@ -497,6 +497,12 @@ fn primitive_s7_sync_cons() -> Primitive {
 
 fn primitive_s7_sync_car() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
+        if !sync_is_pair(s7::s7_car(args)) {
+            return s7::s7_wrong_type_arg_error(
+                sc, c"sync-car".as_ptr(), 1, s7::s7_car(args),
+                c"a sync-pair".as_ptr(),
+            )
+        }
         sync_cxr(sc, args, c"sync-car", | children | { children.0 })
     }
 
@@ -510,6 +516,12 @@ fn primitive_s7_sync_car() -> Primitive {
 
 fn primitive_s7_sync_cdr() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
+        if !sync_is_pair(s7::s7_car(args)) {
+            return s7::s7_wrong_type_arg_error(
+                sc, c"sync-cdr".as_ptr(), 1, s7::s7_car(args),
+                c"a sync-pair".as_ptr(),
+            )
+        }
         sync_cxr(sc, args, c"sync-cdr", | children | { children.1 })
     }
 
