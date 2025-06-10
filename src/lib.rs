@@ -82,7 +82,7 @@ impl Journal {
             ).unwrap(),
         ) {
             Ok(_) => Self {},
-            Err(_) => panic!("Journal already instantiated"),
+            Err(_) => Self {},
         }
     }
 
