@@ -9,7 +9,7 @@ use once_cell::sync::Lazy;
 pub use crate::config::Config;
 pub use crate::persistor::{Word, SIZE};
 use crate::persistor::{PERSISTOR, MemoryPersistor, Persistor, PersistorAccessError};
-use crate::evaluator::{Evaluator, Primitive, Type};
+use crate::evaluator::{Evaluator, Primitive, Type, to_str_or_err};
 use std::thread;
 
 use sha2::{Sha256, Digest};
@@ -698,8 +698,8 @@ fn primitive_s7_sync_call() -> Primitive {
 
         match PERSISTOR.root_get(record) {
             Ok(_) => {
-                let message = CStr::from_ptr(s7::s7_object_to_c_string(sc, message_expr))
-                    .to_str().unwrap().to_owned();
+                let message = to_str_or_err(
+                    CStr::from_ptr(s7::s7_object_to_c_string(sc, message_expr)));
                 if s7::s7_boolean(sc, blocking) {
                     let result = JOURNAL.evaluate_record(record, message.as_str());
                     let c_result = CString::new(format!("(quote {})", result)).unwrap();

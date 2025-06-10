@@ -72,6 +72,13 @@ impl Type {
     }
 }
 
+pub fn to_str_or_err(expression: &CStr) -> String {
+    match expression.to_str() {
+        Ok(expr) => expr.to_owned(),
+        Err(_) => format!("(error 'encoding-error \"Failed to encode string\")"),
+    }
+}
+
 pub struct Evaluator {
     pub sc: *mut s7_scheme,
     primitives: Vec<Primitive>,
@@ -140,7 +147,7 @@ impl Evaluator {
             )).unwrap();
             let s7_obj = s7_eval_c_string(self.sc, wrapped.as_ptr());
             let output = s7_object_to_c_string(self.sc, s7_obj);
-            let ret = CStr::from_ptr(output).to_str().unwrap().to_owned();
+            let ret = to_str_or_err(CStr::from_ptr(output));
             free(output as *mut libc::c_void);
             ret
         }
