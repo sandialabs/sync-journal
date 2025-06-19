@@ -4,7 +4,7 @@ use hex;
 use libc;
 use log::{info, debug};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 pub use crate::config::Config;
 pub use crate::persistor::{Word, SIZE};
@@ -33,11 +33,16 @@ pub const NULL: Word = [
 struct Session {
     record: Word,
     persistor: MemoryPersistor,
+    cache: Arc<Mutex<HashMap<(String, Vec<u8>), Vec<u8>>>>,
 }
 
 impl Session {
-    fn new(record: Word, persistor: MemoryPersistor) -> Self{
-        Self { record, persistor }
+    fn new(
+        record: Word,
+        persistor: MemoryPersistor,
+        cache: Arc<Mutex<HashMap<(String, Vec<u8>), Vec<u8>>>>,
+    ) -> Self {
+        Self { record, persistor, cache }
     }
 }
 
@@ -106,6 +111,8 @@ impl Journal {
     }
 
     fn evaluate_record(&self, record: Word, query: &str) -> String {
+        let cache = Arc::new(Mutex::new(HashMap::new()));
+
         loop {
             let genesis_func = PERSISTOR.leaf_get(
                 PERSISTOR.branch_get(
@@ -149,7 +156,7 @@ impl Journal {
 
             SESSIONS.lock().unwrap().insert(
                 evaluator.sc as usize,
-                Session::new(record, MemoryPersistor::new()),
+                Session::new(record, MemoryPersistor::new(), cache.clone()),
             );
 
             let expr = format!("((eval {}) (sync-pair {}) (quote {}))", genesis_str, state_str, query);
@@ -791,20 +798,38 @@ fn primitive_s7_sync_remote() -> Primitive {
 
         let body = obj2str(s7::s7_cadr(args));
 
-        match thread::spawn(move || {
-            reqwest::blocking::Client::new()
-                .post(&url[1..url.len() -1])
-                .body(body)
-                .send().unwrap().bytes().unwrap()
-        }).join() {
-            Ok(bytes) => {
-                let mut vector = bytes.to_vec();
-                vector.insert(0, 39); // add quote character so that it evaluates correctly
-                vector.push(0);
-                let c_string = CString::from_vec_with_nul(vector).unwrap();
-                s7::s7_eval_c_string(sc, c_string.as_ptr())
+        let cache_guard = {
+            let session = SESSIONS.lock().unwrap();
+            &session.get(&(sc as usize)).unwrap().cache.clone()
+        };
+
+        let mut cache = cache_guard.lock().unwrap();
+
+        let key = (url.clone(), body.as_bytes().to_vec());
+
+        let format = | mut vector: Vec<u8> | {
+            vector.insert(0, 39); // add quote character so that it evaluates correctly
+            vector.push(0);
+            let c_string = CString::from_vec_with_nul(vector).unwrap();
+            s7::s7_eval_c_string(sc, c_string.as_ptr())
+        };
+
+        match cache.get(&key) {
+            Some(bytes) => format(bytes.to_vec()),
+            None => {
+                match thread::spawn(move || {
+                    reqwest::blocking::Client::new()
+                        .post(&url[1..url.len() -1])
+                        .body(body)
+                        .send().unwrap().bytes().unwrap().to_vec()
+                }).join() {
+                    Ok(bytes) => {
+                        cache.insert(key, bytes.clone());
+                        format(bytes)
+                    },
+                    Err(_) => sync_error(sc),
+                }
             }
-            Err(_) => sync_error(sc),
         }
     }
 
