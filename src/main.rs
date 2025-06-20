@@ -1,6 +1,7 @@
 use std::thread;
+use std::time::Instant;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use log::info;
+use log::{info, debug};
 use std::net::{IpAddr, Ipv6Addr};
 use rocket::data::{Limits, ToByteUnit};
 use rocket::{get, post, routes};
@@ -78,8 +79,13 @@ async fn main() {
 
     #[post("/interface", data = "<query>", rank = 1)]
     async fn evaluate(query: &str) -> String {
-        JOURNAL.evaluate(query)
+        let start = Instant::now();
+        let ret = JOURNAL.evaluate(query);
+        debug!("Complete ({:?}) {} -> {}", start.elapsed(), query, ret);
+        ret
     }
+
+    env_logger::init();
 
     if &config.boot != "" {
         let result = JOURNAL.evaluate(&config.boot);

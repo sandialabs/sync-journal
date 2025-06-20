@@ -5,6 +5,8 @@ use libc;
 use log::{info, debug};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use rand::Rng;
+use std::time::Duration;
 use once_cell::sync::Lazy;
 pub use crate::config::Config;
 pub use crate::persistor::{Word, SIZE};
@@ -111,9 +113,11 @@ impl Journal {
     }
 
     fn evaluate_record(&self, record: Word, query: &str) -> String {
+        let mut runs = 0;
         let cache = Arc::new(Mutex::new(HashMap::new()));
 
         loop {
+            thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..=1000)));
             let genesis_func = PERSISTOR.leaf_get(
                 PERSISTOR.branch_get(
                     PERSISTOR.root_get(record).unwrap()
@@ -161,9 +165,8 @@ impl Journal {
 
             let expr = format!("((eval {}) (sync-pair {}) (quote {}))", genesis_str, state_str, query);
 
-            debug!("Evaluating expression: {}", expr.as_str());
-
             let result = evaluator.evaluate(expr.as_str());
+            runs += 1;
 
             let persistor = {
                 let mut session = SESSIONS.lock().unwrap();
@@ -233,7 +236,7 @@ impl Journal {
                                             return output
                                         },
                                         Err(_) => {
-                                            info!("Rerunning query due to concurrency collision: {}", query);
+                                            info!("Rerunning (x{}) due to concurrency collision: {}", runs, query);
                                             drop(lock);
                                             continue
                                         }
@@ -246,7 +249,7 @@ impl Journal {
                         }
                     },
                     false => {
-                        info!("Rerunning query due to concurrency collision: {}", query);
+                        info!("Rerunning (x{}) due to concurrency collision: {}", runs, query);
                         continue
                     }
                 }
@@ -807,7 +810,7 @@ fn primitive_s7_sync_remote() -> Primitive {
 
         let key = (url.clone(), body.as_bytes().to_vec());
 
-        let format = | mut vector: Vec<u8> | {
+        let vec2s7 = | mut vector: Vec<u8> | {
             vector.insert(0, 39); // add quote character so that it evaluates correctly
             vector.push(0);
             let c_string = CString::from_vec_with_nul(vector).unwrap();
@@ -815,7 +818,7 @@ fn primitive_s7_sync_remote() -> Primitive {
         };
 
         match cache.get(&key) {
-            Some(bytes) => format(bytes.to_vec()),
+            Some(bytes) => vec2s7(bytes.to_vec()),
             None => {
                 match thread::spawn(move || {
                     reqwest::blocking::Client::new()
@@ -825,7 +828,7 @@ fn primitive_s7_sync_remote() -> Primitive {
                 }).join() {
                     Ok(bytes) => {
                         cache.insert(key, bytes.clone());
-                        format(bytes)
+                        vec2s7(bytes)
                     },
                     Err(_) => sync_error(sc),
                 }
