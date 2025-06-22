@@ -2,6 +2,7 @@
 
 use hex;
 use libc;
+use std::time::Instant;
 use log::{info, debug};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -35,14 +36,14 @@ pub const NULL: Word = [
 struct Session {
     record: Word,
     persistor: MemoryPersistor,
-    cache: Arc<Mutex<HashMap<(String, Vec<u8>), Vec<u8>>>>,
+    cache: Arc<Mutex<HashMap<(String, String, Vec<u8>), Vec<u8>>>>,
 }
 
 impl Session {
     fn new(
         record: Word,
         persistor: MemoryPersistor,
-        cache: Arc<Mutex<HashMap<(String, Vec<u8>), Vec<u8>>>>,
+        cache: Arc<Mutex<HashMap<(String, String, Vec<u8>), Vec<u8>>>>,
     ) -> Self {
         Self { record, persistor, cache }
     }
@@ -115,6 +116,12 @@ impl Journal {
     fn evaluate_record(&self, record: Word, query: &str) -> String {
         let mut runs = 0;
         let cache = Arc::new(Mutex::new(HashMap::new()));
+
+        let start = Instant::now();
+        debug!(
+            "Evaluating ({})",
+            query.chars().take(128).collect::<String>(),
+        );
 
         loop {
             thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..=1000)));
@@ -201,6 +208,10 @@ impl Journal {
             match state_old == state_new {
                 true => {
                     PERSISTOR.root_delete(record_temp).unwrap();
+                    debug!(
+                        "Completed ({:?}) {} -> {}",
+                        start.elapsed(), query.chars().take(128).collect::<String>(), output,
+                    );
                     return output
                 },
                 false => match state_old == PERSISTOR.root_get(record).unwrap() {
@@ -227,17 +238,20 @@ impl Journal {
                         }
 
                         {
-                            let lock = LOCK.lock().unwrap();
+                            let _lock = LOCK.lock().unwrap();
                             match recurse(&persistor, state_new) {
                                 Ok(_) => {
                                     match PERSISTOR.root_set(record, state_old, state_new) {
                                         Ok(_) => {
                                             PERSISTOR.root_delete(record_temp).unwrap();
+                                            debug!(
+                                                "Completed ({:?}) {} -> {}",
+                                                start.elapsed(), query.chars().take(128).collect::<String>(), output,
+                                            );
                                             return output
                                         },
                                         Err(_) => {
                                             info!("Rerunning (x{}) due to concurrency collision: {}", runs, query);
-                                            drop(lock);
                                             continue
                                         }
                                     }
@@ -693,13 +707,6 @@ fn primitive_s7_sync_call() -> Primitive {
                     )
                 }
 
-                if !s7::s7_is_byte_vector(bv) || s7::s7_vector_length(bv) as usize != SIZE {
-                    return s7::s7_wrong_type_arg_error(
-                        sc, c"sync-call".as_ptr(), 2, bv,
-                        c"a hash-sized byte-vector".as_ptr(),
-                    )
-                }
-
                 let mut record = [0 as u8; SIZE];
                 for i in 0..SIZE { record[i] = s7::s7_byte_vector_ref(bv, i as i64); }
                 record
@@ -748,6 +755,12 @@ fn primitive_s7_sync_http() -> Primitive {
             CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().unwrap().to_owned()
         };
 
+        let vec2s7 = | vector: Vec<u8> | {
+            let bv = s7::s7_make_byte_vector(sc, vector.len() as i64, 1, std::ptr::null_mut());
+            for i in 0..vector.len() { s7::s7_byte_vector_set(bv, i as i64, vector[i]); }
+            bv
+        };
+
         let method = obj2str(s7::s7_car(args));
         let url = obj2str(s7::s7_cadr(args));
 
@@ -757,29 +770,45 @@ fn primitive_s7_sync_http() -> Primitive {
             String::from("")
         };
 
-        match thread::spawn(move || {
-            match method.to_lowercase() {
-                method if method == "get" => {
-                    reqwest::blocking::get(&url[1..url.len() -1])
-                        .unwrap().bytes().unwrap()
-                }
-                method if method == "post" => {
-                    reqwest::blocking::Client::new()
-                        .post(&url[1..url.len() -1])
-                        .body(String::from(&body[1..body.len() -1]))
-                        .send().unwrap().bytes().unwrap()
-                }
-                _ => {
-                    panic!()
+        let cache_mutex = {
+            let session = SESSIONS.lock().unwrap();
+            &session.get(&(sc as usize)).unwrap().cache.clone()
+        };
+
+        let mut cache = cache_mutex.lock().unwrap();
+
+        let key = (method.clone(), url.clone(), body.as_bytes().to_vec());
+
+        match cache.get(&key) {
+            Some(bytes) => {
+                debug!("Cache hit on key {:?}", key);
+                vec2s7(bytes.to_vec())
+            },
+            None => {
+                match thread::spawn(move || {
+                    match method.to_lowercase() {
+                        method if method == "get" => {
+                            reqwest::blocking::get(&url[1..url.len() -1])
+                                .unwrap().bytes().unwrap().to_vec()
+                        }
+                        method if method == "post" => {
+                            reqwest::blocking::Client::new()
+                                .post(&url[1..url.len() -1])
+                                .body(String::from(&body[1..body.len() -1]))
+                                .send().unwrap().bytes().unwrap().to_vec()
+                        }
+                        _ => {
+                            panic!()
+                        }
+                    }
+                }).join() {
+                    Ok(vector) => {
+                        cache.insert(key, vector.clone());
+                        vec2s7(vector)
+                    }
+                    Err(_) => sync_error(sc),
                 }
             }
-        }).join() {
-            Ok(vector) => {
-                let bv = s7::s7_make_byte_vector(sc, vector.len() as i64, 1, std::ptr::null_mut());
-                for i in 0..vector.len() { s7::s7_byte_vector_set(bv, i as i64, vector[i]); }
-                bv
-            }
-            Err(_) => sync_error(sc),
         }
     }
 
@@ -797,19 +826,6 @@ fn primitive_s7_sync_remote() -> Primitive {
             CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().unwrap().to_owned()
         };
 
-        let url = obj2str(s7::s7_car(args));
-
-        let body = obj2str(s7::s7_cadr(args));
-
-        let cache_guard = {
-            let session = SESSIONS.lock().unwrap();
-            &session.get(&(sc as usize)).unwrap().cache.clone()
-        };
-
-        let mut cache = cache_guard.lock().unwrap();
-
-        let key = (url.clone(), body.as_bytes().to_vec());
-
         let vec2s7 = | mut vector: Vec<u8> | {
             vector.insert(0, 39); // add quote character so that it evaluates correctly
             vector.push(0);
@@ -817,8 +833,24 @@ fn primitive_s7_sync_remote() -> Primitive {
             s7::s7_eval_c_string(sc, c_string.as_ptr())
         };
 
+        let url = obj2str(s7::s7_car(args));
+
+        let body = obj2str(s7::s7_cadr(args));
+
+        let cache_mutex = {
+            let session = SESSIONS.lock().unwrap();
+            &session.get(&(sc as usize)).unwrap().cache.clone()
+        };
+
+        let mut cache = cache_mutex.lock().unwrap();
+
+        let key = (String::from("post"), url.clone(), body.as_bytes().to_vec());
+
         match cache.get(&key) {
-            Some(bytes) => vec2s7(bytes.to_vec()),
+            Some(bytes) => {
+                debug!("Cache hit on key {:?}", key);
+                vec2s7(bytes.to_vec())
+            },
             None => {
                 match thread::spawn(move || {
                     reqwest::blocking::Client::new()
