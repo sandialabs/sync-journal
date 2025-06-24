@@ -24,4 +24,6 @@ COPY --from=builder /usr/lib/libgcc_s.so.1 /usr/lib/
 COPY --from=builder /usr/lib/libstdc++.so.6* /usr/lib/
 COPY --from=builder /srv/target/release/journal-sdk .
 
-CMD ./journal-sdk --port 80 --database db
+ENTRYPOINT ["./journal-sdk"]
+
+CMD ["--port", "80", "--database", "db"]
