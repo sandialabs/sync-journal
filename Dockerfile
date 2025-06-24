@@ -2,9 +2,13 @@
 
 FROM alpine:3.21.3 AS builder
 
+ENV CC=clang
+ENV CXX=clang++
+
 # Install OS dependencies
 RUN apk update
 RUN apk add cargo
+RUN apk add clang
 RUN apk add clang-dev
 RUN apk add openssl-dev
 RUN apk add build-base
