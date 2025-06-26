@@ -132,7 +132,9 @@ impl Journal {
         );
 
         loop {
-            thread::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..=1000)));
+            let config = Config::new();
+            let delay = (config.delay * 1_000_000.0).round() as u64;
+            thread::sleep(Duration::from_micros(rand::thread_rng().gen_range(0..=delay)));
             let genesis_func = PERSISTOR.leaf_get(
                 PERSISTOR.branch_get(
                     PERSISTOR.root_get(record).unwrap()
