@@ -50,7 +50,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build Docker images
-        if: github.ref == 'refs/heads/main'
         run: |
           docker build . --tag ghcr.io/${{ github.repository }}/journal-sdk:latest
           docker build . --tag ghcr.io/${{ github.repository }}/journal-sdk:$( cargo pkgid | cut -d '@' -f 2 )

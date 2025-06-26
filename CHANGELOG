@@ -2,6 +2,11 @@
 The purpose of this changelog is to document new features and breaking changes that are most likely to affect developers
 ------------------------------------------------------------------------------------------------------------------------
 
+--- v1.2 (2025.06.23) ---
+
+- Integrate cryptographic signing primitives
+- Modify Dockerfile entrypoint to support commandline execution
+
 --- v1.1 (2025.04.22) ---
 
 - Move record creation/deletion functionality into the main interface

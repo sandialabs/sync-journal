@@ -13,6 +13,11 @@ pub use crate::config::Config;
 pub use crate::persistor::{Word, SIZE};
 use crate::persistor::{PERSISTOR, MemoryPersistor, Persistor, PersistorAccessError};
 use crate::evaluator::{Evaluator, Primitive, Type, to_str_or_err};
+use crate::extensions::crypto::{
+    primitive_s7_crypto_generate,
+    primitive_s7_crypto_sign,
+    primitive_s7_crypto_verify,
+};
 use std::thread;
 
 use sha2::{Sha256, Digest};
@@ -22,6 +27,9 @@ use std::ffi::{CString, CStr};
 mod config;
 mod evaluator;
 mod persistor;
+mod extensions {
+    pub mod crypto;
+}
 
 pub static JOURNAL: Lazy<Journal> = Lazy::new(|| Journal::new());
 
@@ -162,6 +170,9 @@ impl Journal {
                     primitive_s7_sync_call(),
                     primitive_s7_sync_remote(),
                     primitive_s7_sync_http(),
+                    primitive_s7_crypto_generate(),
+                    primitive_s7_crypto_sign(),
+                    primitive_s7_crypto_verify(),
                 ],
             );
 
