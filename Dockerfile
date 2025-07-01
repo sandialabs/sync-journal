@@ -17,7 +17,7 @@ RUN apk add linux-headers
 # Build SDK
 WORKDIR /srv
 COPY . . 
-RUN RUST_LOG=debug cargo build --release
+RUN RUST_LOG=info cargo build --release
 
 # --- Deploy ---
 
