@@ -10,14 +10,10 @@ use journal_sdk::{Config, JOURNAL};
 
 const MICRO: f64 = 1000000.0;
 
-#[rocket::main]
-async fn main() {
-    let config = Config::new();
-
-    #[get("/")]
-    async fn index() -> RawHtml<String> {
-        RawHtml(format!(
-            r#"<!DOCTYPE html>
+#[get("/")]
+async fn index() -> RawHtml<String> {
+    RawHtml(format!(
+        r#"<!DOCTYPE html>
 <html>
     <head>
  <h2>Journal SDK Home</h2>
@@ -29,12 +25,12 @@ async fn main() {
     </body>
 </html>
 "#,
-        ))
-    }
+    ))
+}
 
-    #[get("/interface", format = "text/html")]
-    async fn inform() -> RawHtml<String> {
-        RawHtml(String::from(r#"<!DOCTYPE html>
+#[get("/interface", format = "text/html")]
+async fn inform() -> RawHtml<String> {
+    RawHtml(String::from(r#"<!DOCTYPE html>
 <html>
     <head>
  <h2>Interface</h2>
@@ -74,12 +70,20 @@ async fn main() {
     </body>
 </html>
 "#))
-    }
+}
 
-    #[post("/interface", data = "<query>", rank = 1)]
-    async fn evaluate(query: &str) -> String {
-        JOURNAL.evaluate(query)
-    }
+#[post("/interface", data = "<query>", rank = 1)]
+async fn evaluate(query: &str) -> String {
+    JOURNAL.evaluate(query)
+}
+
+
+
+#[rocket::main]
+async fn main() {
+    let config = Config::new();
+
+    env_logger::init();
 
     if &config.boot != "" {
         let result = JOURNAL.evaluate(&config.boot);
