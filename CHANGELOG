@@ -2,12 +2,18 @@
 The purpose of this changelog is to document new features and breaking changes that are most likely to affect developers
 ------------------------------------------------------------------------------------------------------------------------
 
---- v1.2 (2025.06.23) ---
+--- v1.0.3 (2025.07.02) ---
+
+- Add caching mechanism that enforces exactly one unique request per second
+- Add --delay parameter to help manage congestion
+- Add info/debuggin log activity
+
+--- v1.0.2 (2025.06.23) ---
 
 - Integrate cryptographic signing primitives
 - Modify Dockerfile entrypoint to support commandline execution
 
---- v1.1 (2025.04.22) ---
+--- v1.0.1 (2025.04.22) ---
 
 - Move record creation/deletion functionality into the main interface
 - Simplified URL path structure and rename the main endpoint to /interface
