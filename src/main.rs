@@ -100,8 +100,7 @@ async fn main() {
     rocket_config.port = config.port;
     rocket_config.address = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0));
     rocket_config.limits = Limits::new().limit("string", 1_i32.mebibytes());
-    rocket_config.workers = 1024;
-
+    
     let period = 2_f64.powi(config.periodicity);
 
     if config.step != "" {
