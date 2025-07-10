@@ -20,9 +20,6 @@ pub struct Config {
 
     #[arg(short = 'c', long, default_value_t = 0, help = "Power of two determining the period of the step query")]
     pub periodicity: i32,
-
-    #[arg(short = 'l', long, default_value_t = 0.0, help = "Amount to randomly wait before evaluating to mitigate congestion")]
-    pub delay: f32,
 }
 
 impl Config {
