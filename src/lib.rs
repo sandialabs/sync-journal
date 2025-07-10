@@ -6,8 +6,6 @@ use std::time::Instant;
 use log::{info, debug};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use rand::Rng;
-use std::time::Duration;
 use once_cell::sync::Lazy;
 pub use crate::config::Config;
 pub use crate::persistor::{Word, SIZE};
@@ -65,6 +63,7 @@ static SESSIONS: Lazy<Mutex<HashMap<usize, Session>>> = Lazy::new(|| {
 pub struct JournalAccessError(pub Word);
 
 static LOCK: Mutex<()> = Mutex::new(());
+static RUNS: usize = 3;
 
 /// Journals are the primary way that application developers
 /// interact with the synchronic web.
@@ -132,9 +131,12 @@ impl Journal {
         );
 
         loop {
-            let config = Config::new();
-            let delay = (config.delay * 1_000_000.0).round() as u64;
-            thread::sleep(Duration::from_micros(rand::thread_rng().gen_range(0..=delay)));
+            let _lock1 = if runs >= RUNS {
+                Some(LOCK.lock().unwrap())
+            } else {
+                None
+            };
+
             let genesis_func = PERSISTOR.leaf_get(
                 PERSISTOR.branch_get(
                     PERSISTOR.root_get(record).unwrap()
@@ -251,7 +253,11 @@ impl Journal {
                         }
 
                         {
-                            let _lock = LOCK.lock().unwrap();
+                            let _lock = match _lock1 {
+                                Some(_) => None,
+                                None => Some(LOCK.lock().unwrap()),
+                            };
+                            
                             match recurse(&persistor, state_new) {
                                 Ok(_) => {
                                     match PERSISTOR.root_set(record, state_old, state_new) {
