@@ -253,7 +253,7 @@ impl Journal {
                         }
 
                         {
-                            let _lock = match _lock1 {
+                            let _lock2 = match _lock1 {
                                 Some(_) => None,
                                 None => Some(LOCK.lock().unwrap()),
                             };

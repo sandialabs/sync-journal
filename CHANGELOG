@@ -5,8 +5,8 @@ The purpose of this changelog is to document new features and breaking changes t
 --- v1.0.3 (2025.07.02) ---
 
 - Add caching mechanism that enforces exactly one unique request per second
-- Add --delay parameter to help manage congestion
-- Add info/debuggin log activity
+- Add more controlled locking to mitigate runaway concurrency collisions
+- Add info/debugging log activity
 
 --- v1.0.2 (2025.06.23) ---
 
