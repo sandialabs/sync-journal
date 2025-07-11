@@ -1,5 +1,6 @@
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::time::sleep;
 use log::info;
 use std::net::{IpAddr, Ipv6Addr};
 use rocket::data::{Limits, ToByteUnit};
@@ -114,7 +115,10 @@ async fn main() {
                 let until = start + step * (period * MICRO) as u128;
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros();
                 if now < until {
-                    thread::sleep(Duration::from_micros((until - now).try_into().unwrap()));
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        sleep(Duration::from_micros((until - now).try_into().unwrap())).await;
+                    });
                 }
                 let result = JOURNAL.evaluate(&config.step);
                 info!("Step ({:.6}): {}", until as f64 / MICRO, result);

@@ -2,11 +2,12 @@
 The purpose of this changelog is to document new features and breaking changes that are most likely to affect developers
 ------------------------------------------------------------------------------------------------------------------------
 
---- v1.0.3 (2025.07.02) ---
+--- v1.0.3 (2025.07.10) ---
 
 - Add caching mechanism that enforces exactly one unique request per second
 - Add more controlled locking to mitigate runaway concurrency collisions
 - Add info/debugging log activity
+- Switch to using tokio asynchronous threads
 
 --- v1.0.2 (2025.06.23) ---
 
