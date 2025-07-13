@@ -16,10 +16,12 @@ jobs:
     permissions: write-all
     steps:
       - name: Install dependencies
+        if: github.ref == 'refs/heads/main'
         run: |
           sudo apt update
           sudo apt install -y llvm-dev libclang-dev clang
       - name: Install rust
+        if: github.ref == 'refs/heads/main'
         uses: moonrepo/setup-rust@v1
       - name: Checkout code
         uses: actions/checkout@v4
