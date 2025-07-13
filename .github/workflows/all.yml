@@ -24,8 +24,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Build project
+        if: github.ref == 'refs/heads/main'
         run: cargo build
       - name: Test project
+        if: github.ref == 'refs/heads/main'
         run: cargo test
       - name: Setup Pages
         if: github.ref == 'refs/heads/main'
