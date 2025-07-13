@@ -59,6 +59,14 @@ static SESSIONS: Lazy<Mutex<HashMap<usize, Session>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
+struct CallOnDrop<F: FnMut()>(F);
+
+impl<F: FnMut()> Drop for CallOnDrop<F> {
+  fn drop(&mut self) {
+    (self.0)();
+  }
+}
+
 #[derive(Debug)]
 pub struct JournalAccessError(pub Word);
 
@@ -185,14 +193,19 @@ impl Journal {
                 Session::new(record, MemoryPersistor::new(), cache.clone()),
             );
 
+            let _session_dropper = CallOnDrop(|| {
+                let mut session = SESSIONS.lock().unwrap();
+                session.remove(&(evaluator.sc as usize));
+            });
+
             let expr = format!("((eval {}) (sync-pair {}) (quote {}))", genesis_str, state_str, query);
 
             let result = evaluator.evaluate(expr.as_str());
             runs += 1;
 
             let persistor = {
-                let mut session = SESSIONS.lock().unwrap();
-                &session.remove(&(evaluator.sc as usize)).unwrap().persistor.clone()
+                let session = SESSIONS.lock().unwrap();
+                &session.get(&(evaluator.sc as usize)).unwrap().persistor.clone()
             };
 
             let (output, state_new) = match result.starts_with("(error '") {
