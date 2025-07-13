@@ -23,10 +23,13 @@ RUN RUST_LOG=info cargo build --release
 
 FROM alpine:3.21.3
 
+ENV ROCKET_WORKERS=1024
+
 WORKDIR /srv
 COPY --from=builder /usr/lib/libgcc_s.so.1 /usr/lib/
 COPY --from=builder /usr/lib/libstdc++.so.6* /usr/lib/
 COPY --from=builder /srv/target/release/journal-sdk .
+
 
 ENTRYPOINT ["./journal-sdk"]
 
