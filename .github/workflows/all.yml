@@ -56,9 +56,9 @@ jobs:
       - name: Build Docker images
         run: |
           docker build . --tag ghcr.io/${{ github.repository }}/journal-sdk:latest
-          docker build . --tag ghcr.io/${{ github.repository }}/journal-sdk:$( cargo pkgid | cut -d '@' -f 2 )
+          docker build . --tag ghcr.io/${{ github.repository }}/journal-sdk:1.0.3
       - name: Push Docker images
         # if: github.ref == 'refs/heads/main'
         run: |
           docker push ghcr.io/${{ github.repository }}/journal-sdk:latest
-          docker push ghcr.io/${{ github.repository }}/journal-sdk:$( cargo pkgid | cut -d '@' -f 2 )
+          docker push ghcr.io/${{ github.repository }}/journal-sdk:1.0.3
