@@ -77,8 +77,6 @@ async fn evaluate(query: &str) -> String {
     JOURNAL.evaluate(query)
 }
 
-
-
 #[rocket::main]
 async fn main() {
     let config = Config::new();

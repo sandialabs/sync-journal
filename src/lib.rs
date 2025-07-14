@@ -157,6 +157,10 @@ impl Journal {
 
             let record_temp = PERSISTOR.root_temp(state_old).unwrap();
 
+            let _record_dropper = CallOnDrop(|| {
+                PERSISTOR.root_delete(record_temp).unwrap();
+            });
+
             let state_str = format!(
                 "#u({})",
                 state_old.iter().map(|&num| num.to_string()).collect::<Vec<String>>().join(" "),
@@ -235,7 +239,6 @@ impl Journal {
 
             match state_old == state_new {
                 true => {
-                    PERSISTOR.root_delete(record_temp).unwrap();
                     debug!(
                         "Completed ({:?}) {} -> {}",
                         start.elapsed(), query.chars().take(128).collect::<String>(), output,
@@ -275,7 +278,6 @@ impl Journal {
                                 Ok(_) => {
                                     match PERSISTOR.root_set(record, state_old, state_new) {
                                         Ok(_) => {
-                                            PERSISTOR.root_delete(record_temp).unwrap();
                                             debug!(
                                                 "Completed ({:?}) {} -> {}",
                                                 start.elapsed(), query.chars().take(128).collect::<String>(), output,
