@@ -17,7 +17,6 @@ use crate::extensions::crypto::{
     primitive_s7_crypto_sign,
     primitive_s7_crypto_verify,
 };
-use std::thread;
 
 use sha2::{Sha256, Digest};
 use evaluator as s7;
@@ -763,7 +762,7 @@ fn primitive_s7_sync_call() -> Primitive {
                     let c_result = CString::new(format!("(quote {})", result)).unwrap();
                     s7::s7_eval_c_string(sc, c_result.as_ptr())
                 } else {
-                    thread::spawn(move || {
+                    tokio::spawn(async move {
                         JOURNAL.evaluate_record(record, message.as_str());
                     });
                     s7::s7_make_boolean(sc, true)
@@ -826,23 +825,58 @@ fn primitive_s7_sync_http() -> Primitive {
                 vec2s7(bytes.to_vec())
             },
             None => {
-                match thread::spawn(move || {
-                    match method.to_lowercase() {
-                        method if method == "get" => {
-                            reqwest::blocking::get(&url[1..url.len() -1])
-                                .unwrap().bytes().unwrap().to_vec()
-                        }
-                        method if method == "post" => {
-                            reqwest::blocking::Client::new()
-                                .post(&url[1..url.len() -1])
-                                .body(String::from(&body[1..body.len() -1]))
-                                .send().unwrap().bytes().unwrap().to_vec()
-                        }
-                        _ => {
-                            panic!()
-                        }
+                let handle = tokio::runtime::Handle::try_current();
+                let result = match handle {
+                    Ok(h) => {
+                        std::thread::spawn(move || {
+                            h.block_on(async {
+                                tokio::task::spawn_blocking(move || {
+                                    match method.to_lowercase() {
+                                        method if method == "get" => {
+                                            reqwest::blocking::get(&url[1..url.len() -1])
+                                                .unwrap().bytes().unwrap().to_vec()
+                                        }
+                                        method if method == "post" => {
+                                            reqwest::blocking::Client::new()
+                                                .post(&url[1..url.len() -1])
+                                                .body(String::from(&body[1..body.len() -1]))
+                                                .send().unwrap().bytes().unwrap().to_vec()
+                                        }
+                                        _ => {
+                                            panic!()
+                                        }
+                                    }
+                                }).await.unwrap()
+                            })
+                        }).join()
                     }
-                }).join() {
+                    Err(_) => {
+                        // Fall back to creating a new runtime if no current runtime exists
+                        std::thread::spawn(move || {
+                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            rt.block_on(async {
+                                tokio::task::spawn_blocking(move || {
+                                    match method.to_lowercase() {
+                                        method if method == "get" => {
+                                            reqwest::blocking::get(&url[1..url.len() -1])
+                                                .unwrap().bytes().unwrap().to_vec()
+                                        }
+                                        method if method == "post" => {
+                                            reqwest::blocking::Client::new()
+                                                .post(&url[1..url.len() -1])
+                                                .body(String::from(&body[1..body.len() -1]))
+                                                .send().unwrap().bytes().unwrap().to_vec()
+                                        }
+                                        _ => {
+                                            panic!()
+                                        }
+                                    }
+                                }).await.unwrap()
+                            })
+                        }).join()
+                    }
+                };
+                match result {
                     Ok(vector) => {
                         cache.insert(key, vector.clone());
                         vec2s7(vector)
@@ -893,12 +927,36 @@ fn primitive_s7_sync_remote() -> Primitive {
                 vec2s7(bytes.to_vec())
             },
             None => {
-                match thread::spawn(move || {
-                    reqwest::blocking::Client::new()
-                        .post(&url[1..url.len() -1])
-                        .body(body)
-                        .send().unwrap().bytes().unwrap().to_vec()
-                }).join() {
+                let handle = tokio::runtime::Handle::try_current();
+                let result = match handle {
+                    Ok(h) => {
+                        std::thread::spawn(move || {
+                            h.block_on(async {
+                                tokio::task::spawn_blocking(move || {
+                                    reqwest::blocking::Client::new()
+                                        .post(&url[1..url.len() -1])
+                                        .body(body)
+                                        .send().unwrap().bytes().unwrap().to_vec()
+                                }).await.unwrap()
+                            })
+                        }).join()
+                    }
+                    Err(_) => {
+                        // Fall back to creating a new runtime if no current runtime exists
+                        std::thread::spawn(move || {
+                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            rt.block_on(async {
+                                tokio::task::spawn_blocking(move || {
+                                    reqwest::blocking::Client::new()
+                                        .post(&url[1..url.len() -1])
+                                        .body(body)
+                                        .send().unwrap().bytes().unwrap().to_vec()
+                                }).await.unwrap()
+                            })
+                        }).join()
+                    }
+                };
+                match result {
                     Ok(bytes) => {
                         cache.insert(key, bytes.clone());
                         vec2s7(bytes)

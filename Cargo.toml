@@ -30,4 +30,4 @@ log = "0.4.21"
 env_logger = "0.10"
 crystals-dilithium = "1.0.0"
 pqcrypto = "0.17.0"
-tokio = { version = "1.0", features = ["time", "rt"] }
+tokio = { version = "1.0", features = ["time", "rt", "rt-multi-thread", "macros"] }
