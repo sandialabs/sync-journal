@@ -10,9 +10,11 @@ use std::collections::HashMap;
 use std::ffi::{CString, CStr};
 use std::num::ParseIntError;
 use std::os::raw::c_char;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use libc::free;
+use log::info;
 
 type PrimitiveFunction = unsafe extern "C" fn(*mut s7_scheme, s7_pointer) -> s7_pointer;
 
@@ -84,6 +86,9 @@ pub struct Evaluator {
     primitives: Vec<Primitive>,
 }
 
+// Global counter for tracking active evaluator instances
+static EVALUATOR_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 impl Evaluator {
     pub fn new(types: HashMap<i64, Type>, primitives: Vec<Primitive>) -> Self {
         let mut primitives_ = vec![
@@ -132,6 +137,10 @@ impl Evaluator {
                 );
             }
 
+            // Increment evaluator instance counter
+            let count = EVALUATOR_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
+            info!("Evaluator created, total active evaluators: {}", count);
+
             Self { sc, primitives: primitives_ }
         }
 
@@ -156,6 +165,8 @@ impl Evaluator {
 
 impl Drop for Evaluator {
     fn drop(&mut self) {
+        let count = EVALUATOR_COUNT.fetch_sub(1, Ordering::SeqCst) - 1;
+        info!("Evaluator dropped, total active evaluators: {}", count);
         unsafe {
             s7_free(self.sc);
         }
