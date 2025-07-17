@@ -1,7 +1,5 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
-use hex;
-use futures;
 use libc;
 use std::time::Instant;
 use log::{info, debug};
@@ -735,8 +733,8 @@ fn primitive_s7_sync_call() -> Primitive {
 
         let record = match s7::s7_is_null(sc, s7::s7_cddr(args)) {
             true => {
-                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-                session.get(&(sc as usize)).expect("Session not found for sync-call").record
+                let session = SESSIONS.lock().unwrap();
+                session.get(&(sc as usize)).unwrap().record
             },
             false => {
                 let bv = s7::s7_caddr(args);
@@ -760,10 +758,10 @@ fn primitive_s7_sync_call() -> Primitive {
                     CStr::from_ptr(s7::s7_object_to_c_string(sc, message_expr)));
                 if s7::s7_boolean(sc, blocking) {
                     let result = JOURNAL.evaluate_record(record, message.as_str());
-                    let c_result = CString::new(format!("(quote {})", result)).expect("Failed to create CString for result");
+                    let c_result = CString::new(format!("(quote {})", result)).unwrap();
                     s7::s7_eval_c_string(sc, c_result.as_ptr())
                 } else {
-                    tokio::task::spawn(async move {
+                    tokio::spawn(async move {
                         JOURNAL.evaluate_record(record, message.as_str());
                     });
                     s7::s7_make_boolean(sc, true)
@@ -793,7 +791,7 @@ fn primitive_s7_sync_call() -> Primitive {
 fn primitive_s7_sync_http() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         let obj2str = | obj | {
-            CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().expect("Failed to convert S7 object to string").to_owned()
+            CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().unwrap().to_owned()
         };
 
         let vec2s7 = | vector: Vec<u8> | {
@@ -826,34 +824,34 @@ fn primitive_s7_sync_http() -> Primitive {
                 vec2s7(bytes.to_vec())
             },
             None => {
-                futures::executor::block_on(async {
-                    let result = tokio::task::spawn_blocking(move || {
+                let result = tokio::task::block_in_place(move || {
+                    tokio::runtime::Handle::current().block_on(async move {
                         match method.to_lowercase() {
                             method if method == "get" => {
-                                reqwest::blocking::get(&url[1..url.len() -1])
-                                    .unwrap().bytes().unwrap().to_vec()
+                                reqwest::Client::new().get(&url[1..url.len() -1]).send().
+                                    await.unwrap().bytes().await
                             }
                             method if method == "post" => {
-                                reqwest::blocking::Client::new()
+                                reqwest::Client::new()
                                     .post(&url[1..url.len() -1])
                                     .body(String::from(&body[1..body.len() -1]))
-                                    .send().unwrap().bytes().unwrap().to_vec()
+                                    .send().await.unwrap().bytes().await
                             }
                             _ => {
-                                panic!()
+                                panic!("Unsupported HTTP method")
                             }
                         }
-                    }).await;
+                    })
+                });
 
-                    match result {
-                        Ok(vector) => {
-                            cache.insert(key, vector.clone());
-                            vec2s7(vector)
-                        }
-                        Err(_) => sync_error(sc),
+                match result {
+                    Ok(vector) => {
+                        cache.insert(key, vector.to_vec());
+                        vec2s7(vector.to_vec())
                     }
-                })
-            },
+                    Err(_) => sync_error(sc),
+                }
+            }
         }
     }
 
@@ -897,22 +895,22 @@ fn primitive_s7_sync_remote() -> Primitive {
                 vec2s7(bytes.to_vec())
             },
             None => {
-                futures::executor::block_on(async {
-                    let result = tokio::task::spawn_blocking(move || {
-                        reqwest::blocking::Client::new()
+                let result = tokio::task::block_in_place(move || {
+                    tokio::runtime::Handle::current().block_on(async move {
+                        reqwest::Client::new()
                             .post(&url[1..url.len() -1])
                             .body(body)
-                            .send().unwrap().bytes().unwrap().to_vec()
-                    }).await;
+                            .send().await.unwrap().bytes().await
+                    })
+                });
 
-                    match result {
-                        Ok(bytes) => {
-                            cache.insert(key, bytes.clone());
-                            vec2s7(bytes)
-                        },
-                        Err(_) => sync_error(sc),
-                    }
-                })
+                match result {
+                    Ok(bytes) => {
+                        cache.insert(key, bytes.to_vec());
+                        vec2s7(bytes.to_vec())
+                    },
+                    Err(_) => sync_error(sc),
+                }
             }
         }
     }
