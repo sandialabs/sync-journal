@@ -1,4 +1,3 @@
-use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use log::info;
 use std::net::{IpAddr, Ipv6Addr};
@@ -102,22 +101,18 @@ async fn main() {
     let period = 2_f64.powi(config.periodicity);
 
     if config.step != "" {
-        thread::spawn(move || {
+        tokio::spawn(async move {
             let mut step = 0;
             let start = ((
                 SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64 /
                     (period * MICRO)
             ).ceil() * (period * MICRO)) as u128;
 
-            let rt = tokio::runtime::Runtime::new().unwrap();
-
             loop {
                 let until = start + step * (period * MICRO) as u128;
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros();
                 if now < until {
-                    rt.block_on(async {
-                        tokio::time::sleep(Duration::from_micros((until - now).try_into().unwrap())).await;
-                    });
+                    tokio::time::sleep(Duration::from_micros((until - now).try_into().unwrap())).await;
                 }
                 let result = JOURNAL.evaluate(&config.step);
                 info!("Step ({:.6}): {}", until as f64 / MICRO, result);
