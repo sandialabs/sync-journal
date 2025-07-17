@@ -1,6 +1,7 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
 use hex;
+use futures;
 use libc;
 use std::time::Instant;
 use log::{info, debug};
@@ -8,7 +9,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use once_cell::sync::Lazy;
-use tokio::runtime::Runtime;
 pub use crate::config::Config;
 pub use crate::persistor::{Word, SIZE};
 use crate::persistor::{PERSISTOR, MemoryPersistor, Persistor, PersistorAccessError};
@@ -763,7 +763,7 @@ fn primitive_s7_sync_call() -> Primitive {
                     let c_result = CString::new(format!("(quote {})", result)).expect("Failed to create CString for result");
                     s7::s7_eval_c_string(sc, c_result.as_ptr())
                 } else {
-                    tokio::spawn(async move {
+                    tokio::task::spawn(async move {
                         JOURNAL.evaluate_record(record, message.as_str());
                     });
                     s7::s7_make_boolean(sc, true)
@@ -826,8 +826,7 @@ fn primitive_s7_sync_http() -> Primitive {
                 vec2s7(bytes.to_vec())
             },
             None => {
-                let rt = Runtime::new().unwrap();
-                rt.block_on(async {
+                futures::executor::block_on(async {
                     let result = tokio::task::spawn_blocking(move || {
                         match method.to_lowercase() {
                             method if method == "get" => {
@@ -898,8 +897,7 @@ fn primitive_s7_sync_remote() -> Primitive {
                 vec2s7(bytes.to_vec())
             },
             None => {
-                let rt = Runtime::new().unwrap();
-                rt.block_on(async {
+                futures::executor::block_on(async {
                     let result = tokio::task::spawn_blocking(move || {
                         reqwest::blocking::Client::new()
                             .post(&url[1..url.len() -1])

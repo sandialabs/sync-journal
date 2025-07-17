@@ -82,19 +82,23 @@ fn test_http() {
 	    .with_body("greeted")
 	    .create();
 
-    assert(
-	    format!(
-	        "(byte-vector->string (sync-http 'get \"{}/hello\"))",
-	        url,
-	    ).as_str(),
-	    "\"hello, world!\"",
-    );
+		let rt = tokio::runtime::Runtime::new().unwrap();
 
-    assert(
-	    format!(
-	        "(byte-vector->string (sync-http 'post \"{}/hello\" \"world\"))",
-	        url,
-	    ).as_str(),
-	    "\"greeted\"",
+		rt.block_on(async {
+			assert(
+				format!(
+						"(byte-vector->string (sync-http 'get \"{}/hello\"))",
+						url,
+				).as_str(),
+				"\"hello, world!\"",
+			);
+
+			assert(
+				format!(
+						"(byte-vector->string (sync-http 'post \"{}/hello\" \"world\"))",
+						url,
+				).as_str(),
+				"\"greeted\"",
     );
+	})
 }
