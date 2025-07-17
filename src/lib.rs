@@ -103,9 +103,9 @@ impl Journal {
         match PERSISTOR.root_new(
             NULL,
             PERSISTOR.branch_set(
-                PERSISTOR.leaf_set(GENESIS_STR.as_bytes().to_vec()).unwrap(),
+                PERSISTOR.leaf_set(GENESIS_STR.as_bytes().to_vec()).expect("Failed to create genesis leaf"),
                 NULL,
-            ).unwrap(),
+            ).expect("Failed to create genesis branch"),
         ) {
             Ok(_) => Self {},
             Err(_) => Self {},
@@ -143,25 +143,25 @@ impl Journal {
 
         loop {
             let _lock1 = if runs >= RUNS {
-                Some(LOCK.lock().unwrap())
+                Some(LOCK.lock().expect("Failed to acquire concurrency lock"))
             } else {
                 None
             };
 
             let genesis_func = PERSISTOR.leaf_get(
                 PERSISTOR.branch_get(
-                    PERSISTOR.root_get(record).unwrap()
-                ).unwrap().0
-            ).unwrap().to_vec();
+                    PERSISTOR.root_get(record).expect("Failed to get root record")
+                ).expect("Failed to get genesis branch").0
+            ).expect("Failed to get genesis function").to_vec();
 
             let genesis_str = String::from_utf8_lossy(&genesis_func);
 
-            let state_old = PERSISTOR.root_get(record).unwrap();
+            let state_old = PERSISTOR.root_get(record).expect("Failed to get current state");
 
-            let record_temp = PERSISTOR.root_temp(state_old).unwrap();
+            let record_temp = PERSISTOR.root_temp(state_old).expect("Failed to create temporary record");
 
             let _record_dropper = CallOnDrop(|| {
-                PERSISTOR.root_delete(record_temp).unwrap();
+                PERSISTOR.root_delete(record_temp).expect("Failed to delete temporary record");
             });
 
             let state_str = format!(
@@ -195,7 +195,7 @@ impl Journal {
                 ],
             );
 
-            SESSIONS.lock().unwrap().insert(
+            SESSIONS.lock().expect("Failed to acquire sessions lock").insert(
                 evaluator.sc as usize,
                 Session::new(record, MemoryPersistor::new(), cache.clone()),
             );
@@ -203,7 +203,7 @@ impl Journal {
             info!("Session added to SESSIONS, total active sessions: {}", count);
 
             let _session_dropper = CallOnDrop(|| {
-                let mut session = SESSIONS.lock().unwrap();
+                let mut session = SESSIONS.lock().expect("Failed to acquire sessions lock for cleanup");
                 session.remove(&(evaluator.sc as usize));
                 let count = SESSION_COUNT.fetch_sub(1, Ordering::SeqCst) - 1;
                 info!("Session removed from SESSIONS, total active sessions: {}", count);
@@ -215,8 +215,8 @@ impl Journal {
             runs += 1;
 
             let persistor = {
-                let session = SESSIONS.lock().unwrap();
-                &session.get(&(evaluator.sc as usize)).unwrap().persistor.clone()
+                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                &session.get(&(evaluator.sc as usize)).expect("Session not found in SESSIONS map").persistor.clone()
             };
 
             let (output, state_new) = match result.starts_with("(error '") {
@@ -225,7 +225,7 @@ impl Journal {
                     match result.rfind('.') {
                         Some(index) => match *&result[(index + 16)..(result.len() - 3)]
                             .split(' ').collect::<Vec<&str>>()
-                            .iter().map(|x| x.parse::<u8>().unwrap()).collect::<Vec<u8>>()
+                            .iter().map(|x| x.parse::<u8>().expect("Failed to parse state byte")).collect::<Vec<u8>>()
                             .try_into() {
                                 Ok(state_new) => (
                                     String::from(&result[1..(index - 1)]),
@@ -252,7 +252,7 @@ impl Journal {
                     );
                     return output
                 },
-                false => match state_old == PERSISTOR.root_get(record).unwrap() {
+                false => match state_old == PERSISTOR.root_get(record).expect("Failed to get record state for comparison") {
                     true => {
                         fn recurse(source: &MemoryPersistor, node: Word) -> Result<(), PersistorAccessError> {
                             if node == NULL {
@@ -262,10 +262,10 @@ impl Journal {
                             } else if let Ok(_) = PERSISTOR.branch_get(node) {
                                 Ok(())
                             } else if let Ok(content) = source.leaf_get(node) {
-                                PERSISTOR.leaf_set(content).unwrap();
+                                PERSISTOR.leaf_set(content).expect("Failed to set leaf content");
                                 Ok(())
                             } else if let Ok((left, right)) = source.branch_get(node) {
-                                PERSISTOR.branch_set(left, right).unwrap();
+                                PERSISTOR.branch_set(left, right).expect("Failed to set branch");
                                 match recurse(&source, left) {
                                     Ok(_) => recurse(&source, right),
                                     err => err,
@@ -278,7 +278,7 @@ impl Journal {
                         {
                             let _lock2 = match _lock1 {
                                 Some(_) => None,
-                                None => Some(LOCK.lock().unwrap()),
+                                None => Some(LOCK.lock().expect("Failed to acquire secondary lock")),
                             };
                             
                             match recurse(&persistor, state_new) {
@@ -416,8 +416,8 @@ fn primitive_s7_sync_pair() -> Primitive {
         for i in 0..SIZE { word[i] = s7::s7_byte_vector_ref(digest, i as i64); }
 
         let persistor = {
-            let session = SESSIONS.lock().unwrap();
-            &session.get(&(sc as usize)).unwrap().persistor.clone()
+            let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+            &session.get(&(sc as usize)).expect("Session not found for sync-pair").persistor.clone()
         };
 
         if word == NULL || persistor.branch_get(word).is_ok() || PERSISTOR.branch_get(word).is_ok() {
@@ -517,8 +517,8 @@ fn primitive_s7_sync_pair_to_bytes() -> Primitive {
 fn primitive_s7_sync_cons() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         let persistor = {
-            let session = SESSIONS.lock().unwrap();
-            &session.get(&(sc as usize)).unwrap().persistor.clone()
+            let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+            &session.get(&(sc as usize)).expect("Session not found for sync-cons").persistor.clone()
         };
 
         let handle_arg = | obj, number | {
@@ -620,9 +620,9 @@ fn primitive_s7_sync_create() -> Primitive {
         match PERSISTOR.root_new(
             record,
             PERSISTOR.branch_set(
-                PERSISTOR.leaf_set(GENESIS_STR.as_bytes().to_vec()).unwrap(),
+                PERSISTOR.leaf_set(GENESIS_STR.as_bytes().to_vec()).expect("Failed to create genesis leaf for new record"),
                 NULL,
-            ).unwrap(),
+            ).expect("Failed to create genesis branch for new record"),
         ) {
             Ok(_) => {
                 s7::s7_make_boolean(sc, true)
@@ -735,8 +735,8 @@ fn primitive_s7_sync_call() -> Primitive {
 
         let record = match s7::s7_is_null(sc, s7::s7_cddr(args)) {
             true => {
-                let session = SESSIONS.lock().unwrap();
-                session.get(&(sc as usize)).unwrap().record
+                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                session.get(&(sc as usize)).expect("Session not found for sync-call").record
             },
             false => {
                 let bv = s7::s7_caddr(args);
@@ -760,7 +760,7 @@ fn primitive_s7_sync_call() -> Primitive {
                     CStr::from_ptr(s7::s7_object_to_c_string(sc, message_expr)));
                 if s7::s7_boolean(sc, blocking) {
                     let result = JOURNAL.evaluate_record(record, message.as_str());
-                    let c_result = CString::new(format!("(quote {})", result)).unwrap();
+                    let c_result = CString::new(format!("(quote {})", result)).expect("Failed to create CString for result");
                     s7::s7_eval_c_string(sc, c_result.as_ptr())
                 } else {
                     tokio::spawn(async move {
@@ -793,7 +793,7 @@ fn primitive_s7_sync_call() -> Primitive {
 fn primitive_s7_sync_http() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         let obj2str = | obj | {
-            CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().unwrap().to_owned()
+            CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().expect("Failed to convert S7 object to string").to_owned()
         };
 
         let vec2s7 = | vector: Vec<u8> | {
