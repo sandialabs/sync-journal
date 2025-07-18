@@ -94,7 +94,9 @@ static RUNS: usize = 3;
 /// record secret that is the second hash preimage of the identifier.
 /// This is intended to be used so that applications can bootstrap
 /// records into increasingly sophisticated notions of identity.
-pub struct Journal {}
+pub struct Journal {
+    client: reqwest::Client,
+}
 
 impl Journal {
     fn new() -> Self {
@@ -105,8 +107,8 @@ impl Journal {
                 NULL,
             ).expect("Failed to create genesis branch"),
         ) {
-            Ok(_) => Self {},
-            Err(_) => Self {},
+            Ok(_) => Self { client: reqwest::Client::new() },
+            Err(_) => Self { client: reqwest::Client::new() },
         }
     }
 
@@ -828,11 +830,11 @@ fn primitive_s7_sync_http() -> Primitive {
                     tokio::runtime::Handle::current().block_on(async move {
                         match method.to_lowercase() {
                             method if method == "get" => {
-                                reqwest::Client::new().get(&url[1..url.len() -1]).send().
+                                JOURNAL.client.get(&url[1..url.len() -1]).send().
                                     await?.bytes().await
                             }
                             method if method == "post" => {
-                                reqwest::Client::new()
+                                JOURNAL.client
                                     .post(&url[1..url.len() -1])
                                     .body(String::from(&body[1..body.len() -1]))
                                     .send().await?.bytes().await
@@ -897,7 +899,7 @@ fn primitive_s7_sync_remote() -> Primitive {
             None => {
                 let result = tokio::task::block_in_place(move || {
                     tokio::runtime::Handle::current().block_on(async move {
-                        reqwest::Client::new()
+                        JOURNAL.client
                             .post(&url[1..url.len() -1])
                             .body(body)
                             .send().await?.bytes().await
