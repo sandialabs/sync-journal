@@ -829,13 +829,13 @@ fn primitive_s7_sync_http() -> Primitive {
                         match method.to_lowercase() {
                             method if method == "get" => {
                                 reqwest::Client::new().get(&url[1..url.len() -1]).send().
-                                    await.unwrap().bytes().await
+                                    await?.bytes().await
                             }
                             method if method == "post" => {
                                 reqwest::Client::new()
                                     .post(&url[1..url.len() -1])
                                     .body(String::from(&body[1..body.len() -1]))
-                                    .send().await.unwrap().bytes().await
+                                    .send().await?.bytes().await
                             }
                             _ => {
                                 panic!("Unsupported HTTP method")
@@ -900,7 +900,7 @@ fn primitive_s7_sync_remote() -> Primitive {
                         reqwest::Client::new()
                             .post(&url[1..url.len() -1])
                             .body(body)
-                            .send().await.unwrap().bytes().await
+                            .send().await?.bytes().await
                     })
                 });
 
