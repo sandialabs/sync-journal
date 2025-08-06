@@ -5,7 +5,6 @@ use std::time::Instant;
 use log::{info, debug};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use once_cell::sync::Lazy;
 pub use crate::config::Config;
 pub use crate::persistor::{Word, SIZE};
@@ -29,8 +28,6 @@ mod extensions {
 }
 
 pub static JOURNAL: Lazy<Journal> = Lazy::new(|| Journal::new());
-
-static SESSION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 const SYNC_PAIR_TAG: i64 = 0;
 
@@ -199,14 +196,10 @@ impl Journal {
                 evaluator.sc as usize,
                 Session::new(record, MemoryPersistor::new(), cache.clone()),
             );
-            let count = SESSION_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
-            info!("Session added to SESSIONS, total active sessions: {}", count);
 
             let _session_dropper = CallOnDrop(|| {
                 let mut session = SESSIONS.lock().expect("Failed to acquire sessions lock for cleanup");
                 session.remove(&(evaluator.sc as usize));
-                let count = SESSION_COUNT.fetch_sub(1, Ordering::SeqCst) - 1;
-                info!("Session removed from SESSIONS, total active sessions: {}", count);
             });
 
             let expr = format!("((eval {}) (sync-pair {}) (quote {}))", genesis_str, state_str, query);
