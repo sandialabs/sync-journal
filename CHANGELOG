@@ -2,7 +2,7 @@
 The purpose of this changelog is to document new features and breaking changes that are most likely to affect developers
 ------------------------------------------------------------------------------------------------------------------------
 
---- v1.0.3 (2025.07.10) ---
+--- v1.0.3 (2025.08.25) ---
 
 - Add caching mechanism that enforces exactly one unique request per second
 - Add more controlled locking to mitigate runaway concurrency collisions
@@ -19,9 +19,9 @@ The purpose of this changelog is to document new features and breaking changes t
 - Move record creation/deletion functionality into the main interface
 - Simplified URL path structure and rename the main endpoint to /interface
 - Split old sync-call into separate sync-call and sync-http functions
-- expand sync-call to sync-call, sync-http, and sync-remote
-- add support for concurrency (via sync-call)
-- add --evaluate flag for evaluating single expressions
+- Expand sync-call to sync-call, sync-http, and sync-remote
+- Add support for concurrency (via sync-call)
+- Add --evaluate flag for evaluating single expressions
 
 --- v1.0 (2025.04.21) ---
 
