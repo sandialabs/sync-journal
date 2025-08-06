@@ -69,6 +69,8 @@ fn test_http() {
     let mut server = mockito::Server::new();
     let url = server.url();
 
+		tokio::task::block_in_place(move || {
+			tokio::runtime::Runtime::new().unwrap().block_on(async move {
     server.mock("GET", "/hello")
 	    .with_status(200)
 	    .with_header("content-type", "text/plain")
@@ -82,19 +84,21 @@ fn test_http() {
 	    .with_body("greeted")
 	    .create();
 
-    assert(
-	    format!(
-	        "(byte-vector->string (sync-http 'get \"{}/hello\"))",
-	        url,
-	    ).as_str(),
-	    "\"hello, world!\"",
-    );
+				assert(
+					format!(
+							"(byte-vector->string (sync-http 'get \"{}/hello\"))",
+							url,
+					).as_str(),
+					"\"hello, world!\"",
+				);
 
-    assert(
-	    format!(
-	        "(byte-vector->string (sync-http 'post \"{}/hello\" \"world\"))",
-	        url,
-	    ).as_str(),
-	    "\"greeted\"",
-    );
+				assert(
+					format!(
+							"(byte-vector->string (sync-http 'post \"{}/hello\" \"world\"))",
+							url,
+					).as_str(),
+					"\"greeted\"",
+				);
+			})
+		})
 }

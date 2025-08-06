@@ -2,6 +2,9 @@
 
 FROM alpine:3.21.3 AS builder
 
+ARG RUST_LOG=info
+
+ENV RUST_LOG=${RUST_LOG}
 ENV CC=clang
 ENV CXX=clang++
 
@@ -17,7 +20,7 @@ RUN apk add linux-headers
 # Build SDK
 WORKDIR /srv
 COPY . . 
-RUN RUST_LOG=info cargo build --release
+RUN cargo build --release
 
 # --- Deploy ---
 

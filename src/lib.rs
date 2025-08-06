@@ -1,6 +1,5 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
-use hex;
 use libc;
 use std::time::Instant;
 use log::{info, debug};
@@ -10,13 +9,12 @@ use once_cell::sync::Lazy;
 pub use crate::config::Config;
 pub use crate::persistor::{Word, SIZE};
 use crate::persistor::{PERSISTOR, MemoryPersistor, Persistor, PersistorAccessError};
-use crate::evaluator::{Evaluator, Primitive, Type, to_str_or_err};
+use crate::evaluator::{Evaluator, Primitive, Type, obj2str};
 use crate::extensions::crypto::{
     primitive_s7_crypto_generate,
     primitive_s7_crypto_sign,
     primitive_s7_crypto_verify,
 };
-use std::thread;
 
 use sha2::{Sha256, Digest};
 use evaluator as s7;
@@ -59,6 +57,14 @@ static SESSIONS: Lazy<Mutex<HashMap<usize, Session>>> = Lazy::new(|| {
     Mutex::new(HashMap::new())
 });
 
+struct CallOnDrop<F: FnMut()>(F);
+
+impl<F: FnMut()> Drop for CallOnDrop<F> {
+  fn drop(&mut self) {
+    (self.0)();
+  }
+}
+
 #[derive(Debug)]
 pub struct JournalAccessError(pub Word);
 
@@ -85,19 +91,21 @@ static RUNS: usize = 3;
 /// record secret that is the second hash preimage of the identifier.
 /// This is intended to be used so that applications can bootstrap
 /// records into increasingly sophisticated notions of identity.
-pub struct Journal {}
+pub struct Journal {
+    client: reqwest::Client,
+}
 
 impl Journal {
     fn new() -> Self {
         match PERSISTOR.root_new(
             NULL,
             PERSISTOR.branch_set(
-                PERSISTOR.leaf_set(GENESIS_STR.as_bytes().to_vec()).unwrap(),
+                PERSISTOR.leaf_set(GENESIS_STR.as_bytes().to_vec()).expect("Failed to create genesis leaf"),
                 NULL,
-            ).unwrap(),
+            ).expect("Failed to create genesis branch"),
         ) {
-            Ok(_) => Self {},
-            Err(_) => Self {},
+            Ok(_) => Self { client: reqwest::Client::new() },
+            Err(_) => Self { client: reqwest::Client::new() },
         }
     }
 
@@ -132,22 +140,26 @@ impl Journal {
 
         loop {
             let _lock1 = if runs >= RUNS {
-                Some(LOCK.lock().unwrap())
+                Some(LOCK.lock().expect("Failed to acquire concurrency lock"))
             } else {
                 None
             };
 
             let genesis_func = PERSISTOR.leaf_get(
                 PERSISTOR.branch_get(
-                    PERSISTOR.root_get(record).unwrap()
-                ).unwrap().0
-            ).unwrap().to_vec();
+                    PERSISTOR.root_get(record).expect("Failed to get root record")
+                ).expect("Failed to get genesis branch").0
+            ).expect("Failed to get genesis function").to_vec();
 
             let genesis_str = String::from_utf8_lossy(&genesis_func);
 
-            let state_old = PERSISTOR.root_get(record).unwrap();
+            let state_old = PERSISTOR.root_get(record).expect("Failed to get current state");
 
-            let record_temp = PERSISTOR.root_temp(state_old).unwrap();
+            let record_temp = PERSISTOR.root_temp(state_old).expect("Failed to create temporary record");
+
+            let _record_dropper = CallOnDrop(|| {
+                PERSISTOR.root_delete(record_temp).expect("Failed to delete temporary record");
+            });
 
             let state_str = format!(
                 "#u({})",
@@ -180,10 +192,15 @@ impl Journal {
                 ],
             );
 
-            SESSIONS.lock().unwrap().insert(
+            SESSIONS.lock().expect("Failed to acquire sessions lock").insert(
                 evaluator.sc as usize,
                 Session::new(record, MemoryPersistor::new(), cache.clone()),
             );
+
+            let _session_dropper = CallOnDrop(|| {
+                let mut session = SESSIONS.lock().expect("Failed to acquire sessions lock for cleanup");
+                session.remove(&(evaluator.sc as usize));
+            });
 
             let expr = format!("((eval {}) (sync-pair {}) (quote {}))", genesis_str, state_str, query);
 
@@ -191,8 +208,8 @@ impl Journal {
             runs += 1;
 
             let persistor = {
-                let mut session = SESSIONS.lock().unwrap();
-                &session.remove(&(evaluator.sc as usize)).unwrap().persistor.clone()
+                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                &session.get(&(evaluator.sc as usize)).expect("Session not found in SESSIONS map").persistor.clone()
             };
 
             let (output, state_new) = match result.starts_with("(error '") {
@@ -201,7 +218,7 @@ impl Journal {
                     match result.rfind('.') {
                         Some(index) => match *&result[(index + 16)..(result.len() - 3)]
                             .split(' ').collect::<Vec<&str>>()
-                            .iter().map(|x| x.parse::<u8>().unwrap()).collect::<Vec<u8>>()
+                            .iter().map(|x| x.parse::<u8>().expect("Failed to parse state byte")).collect::<Vec<u8>>()
                             .try_into() {
                                 Ok(state_new) => (
                                     String::from(&result[1..(index - 1)]),
@@ -222,14 +239,13 @@ impl Journal {
 
             match state_old == state_new {
                 true => {
-                    PERSISTOR.root_delete(record_temp).unwrap();
                     debug!(
                         "Completed ({:?}) {} -> {}",
                         start.elapsed(), query.chars().take(128).collect::<String>(), output,
                     );
                     return output
                 },
-                false => match state_old == PERSISTOR.root_get(record).unwrap() {
+                false => match state_old == PERSISTOR.root_get(record).expect("Failed to get record state for comparison") {
                     true => {
                         fn recurse(source: &MemoryPersistor, node: Word) -> Result<(), PersistorAccessError> {
                             if node == NULL {
@@ -239,10 +255,10 @@ impl Journal {
                             } else if let Ok(_) = PERSISTOR.branch_get(node) {
                                 Ok(())
                             } else if let Ok(content) = source.leaf_get(node) {
-                                PERSISTOR.leaf_set(content).unwrap();
+                                PERSISTOR.leaf_set(content).expect("Failed to set leaf content");
                                 Ok(())
                             } else if let Ok((left, right)) = source.branch_get(node) {
-                                PERSISTOR.branch_set(left, right).unwrap();
+                                PERSISTOR.branch_set(left, right).expect("Failed to set branch");
                                 match recurse(&source, left) {
                                     Ok(_) => recurse(&source, right),
                                     err => err,
@@ -255,14 +271,13 @@ impl Journal {
                         {
                             let _lock2 = match _lock1 {
                                 Some(_) => None,
-                                None => Some(LOCK.lock().unwrap()),
+                                None => Some(LOCK.lock().expect("Failed to acquire secondary lock")),
                             };
                             
                             match recurse(&persistor, state_new) {
                                 Ok(_) => {
                                     match PERSISTOR.root_set(record, state_old, state_new) {
                                         Ok(_) => {
-                                            PERSISTOR.root_delete(record_temp).unwrap();
                                             debug!(
                                                 "Completed ({:?}) {} -> {}",
                                                 start.elapsed(), query.chars().take(128).collect::<String>(), output,
@@ -394,8 +409,8 @@ fn primitive_s7_sync_pair() -> Primitive {
         for i in 0..SIZE { word[i] = s7::s7_byte_vector_ref(digest, i as i64); }
 
         let persistor = {
-            let session = SESSIONS.lock().unwrap();
-            &session.get(&(sc as usize)).unwrap().persistor.clone()
+            let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+            &session.get(&(sc as usize)).expect("Session not found for sync-pair").persistor.clone()
         };
 
         if word == NULL || persistor.branch_get(word).is_ok() || PERSISTOR.branch_get(word).is_ok() {
@@ -495,8 +510,8 @@ fn primitive_s7_sync_pair_to_bytes() -> Primitive {
 fn primitive_s7_sync_cons() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         let persistor = {
-            let session = SESSIONS.lock().unwrap();
-            &session.get(&(sc as usize)).unwrap().persistor.clone()
+            let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+            &session.get(&(sc as usize)).expect("Session not found for sync-cons").persistor.clone()
         };
 
         let handle_arg = | obj, number | {
@@ -598,9 +613,9 @@ fn primitive_s7_sync_create() -> Primitive {
         match PERSISTOR.root_new(
             record,
             PERSISTOR.branch_set(
-                PERSISTOR.leaf_set(GENESIS_STR.as_bytes().to_vec()).unwrap(),
+                PERSISTOR.leaf_set(GENESIS_STR.as_bytes().to_vec()).expect("Failed to create genesis leaf for new record"),
                 NULL,
-            ).unwrap(),
+            ).expect("Failed to create genesis branch for new record"),
         ) {
             Ok(_) => {
                 s7::s7_make_boolean(sc, true)
@@ -734,14 +749,13 @@ fn primitive_s7_sync_call() -> Primitive {
 
         match PERSISTOR.root_get(record) {
             Ok(_) => {
-                let message = to_str_or_err(
-                    CStr::from_ptr(s7::s7_object_to_c_string(sc, message_expr)));
+                let message = obj2str(sc, message_expr);
                 if s7::s7_boolean(sc, blocking) {
                     let result = JOURNAL.evaluate_record(record, message.as_str());
                     let c_result = CString::new(format!("(quote {})", result)).unwrap();
                     s7::s7_eval_c_string(sc, c_result.as_ptr())
                 } else {
-                    thread::spawn(move || {
+                    tokio::spawn(async move {
                         JOURNAL.evaluate_record(record, message.as_str());
                     });
                     s7::s7_make_boolean(sc, true)
@@ -770,21 +784,17 @@ fn primitive_s7_sync_call() -> Primitive {
 
 fn primitive_s7_sync_http() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let obj2str = | obj | {
-            CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().unwrap().to_owned()
-        };
-
         let vec2s7 = | vector: Vec<u8> | {
             let bv = s7::s7_make_byte_vector(sc, vector.len() as i64, 1, std::ptr::null_mut());
             for i in 0..vector.len() { s7::s7_byte_vector_set(bv, i as i64, vector[i]); }
             bv
         };
 
-        let method = obj2str(s7::s7_car(args));
-        let url = obj2str(s7::s7_cadr(args));
+        let method = obj2str(sc, s7::s7_car(args));
+        let url = obj2str(sc, s7::s7_cadr(args));
 
         let body = if s7::s7_list_length(sc, args) >= 3 {
-            obj2str(s7::s7_caddr(args))
+            obj2str(sc, s7::s7_caddr(args))
         } else {
             String::from("")
         };
@@ -804,26 +814,30 @@ fn primitive_s7_sync_http() -> Primitive {
                 vec2s7(bytes.to_vec())
             },
             None => {
-                match thread::spawn(move || {
-                    match method.to_lowercase() {
-                        method if method == "get" => {
-                            reqwest::blocking::get(&url[1..url.len() -1])
-                                .unwrap().bytes().unwrap().to_vec()
+                let result = tokio::task::block_in_place(move || {
+                    tokio::runtime::Handle::current().block_on(async move {
+                        match method.to_lowercase() {
+                            method if method == "get" => {
+                                JOURNAL.client.get(&url[1..url.len() -1]).send().
+                                    await?.bytes().await
+                            }
+                            method if method == "post" => {
+                                JOURNAL.client
+                                    .post(&url[1..url.len() -1])
+                                    .body(String::from(&body[1..body.len() -1]))
+                                    .send().await?.bytes().await
+                            }
+                            _ => {
+                                panic!("Unsupported HTTP method")
+                            }
                         }
-                        method if method == "post" => {
-                            reqwest::blocking::Client::new()
-                                .post(&url[1..url.len() -1])
-                                .body(String::from(&body[1..body.len() -1]))
-                                .send().unwrap().bytes().unwrap().to_vec()
-                        }
-                        _ => {
-                            panic!()
-                        }
-                    }
-                }).join() {
+                    })
+                });
+
+                match result {
                     Ok(vector) => {
-                        cache.insert(key, vector.clone());
-                        vec2s7(vector)
+                        cache.insert(key, vector.to_vec());
+                        vec2s7(vector.to_vec())
                     }
                     Err(_) => sync_error(sc),
                 }
@@ -841,10 +855,6 @@ fn primitive_s7_sync_http() -> Primitive {
 
 fn primitive_s7_sync_remote() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let obj2str = | obj | {
-            CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().unwrap().to_owned()
-        };
-
         let vec2s7 = | mut vector: Vec<u8> | {
             vector.insert(0, 39); // add quote character so that it evaluates correctly
             vector.push(0);
@@ -852,9 +862,9 @@ fn primitive_s7_sync_remote() -> Primitive {
             s7::s7_eval_c_string(sc, c_string.as_ptr())
         };
 
-        let url = obj2str(s7::s7_car(args));
+        let url = obj2str(sc, s7::s7_car(args));
 
-        let body = obj2str(s7::s7_cadr(args));
+        let body = obj2str(sc, s7::s7_cadr(args));
 
         let cache_mutex = {
             let session = SESSIONS.lock().unwrap();
@@ -871,15 +881,19 @@ fn primitive_s7_sync_remote() -> Primitive {
                 vec2s7(bytes.to_vec())
             },
             None => {
-                match thread::spawn(move || {
-                    reqwest::blocking::Client::new()
-                        .post(&url[1..url.len() -1])
-                        .body(body)
-                        .send().unwrap().bytes().unwrap().to_vec()
-                }).join() {
+                let result = tokio::task::block_in_place(move || {
+                    tokio::runtime::Handle::current().block_on(async move {
+                        JOURNAL.client
+                            .post(&url[1..url.len() -1])
+                            .body(body)
+                            .send().await?.bytes().await
+                    })
+                });
+
+                match result {
                     Ok(bytes) => {
-                        cache.insert(key, bytes.clone());
-                        vec2s7(bytes)
+                        cache.insert(key, bytes.to_vec());
+                        vec2s7(bytes.to_vec())
                     },
                     Err(_) => sync_error(sc),
                 }
