@@ -1,6 +1,6 @@
 use hex;
+use journal_sdk::{Word, JOURNAL};
 use rand::RngCore;
-use journal_sdk::{JOURNAL, Word};
 
 pub fn setup() -> (String, impl Fn(&str, &str)) {
     let mut seed: Word = [0 as u8; 32];
@@ -8,28 +8,28 @@ pub fn setup() -> (String, impl Fn(&str, &str)) {
     let record = hex::encode(seed);
 
     assert!(
-        JOURNAL.evaluate(format!(
-            "(sync-create (hex-string->byte-vector \"{}\"))",
-            record,
-        ).as_str())== "#t",
+        JOURNAL
+            .evaluate(format!("(sync-create (hex-string->byte-vector \"{}\"))", record,).as_str())
+            == "#t",
         "Unable to set up new Journal",
     );
 
-	(
-        record.clone(),
-	    move | expression, expected | {
-	        let result = JOURNAL.evaluate(format!(
+    (record.clone(), move |expression, expected| {
+        let result = JOURNAL.evaluate(
+            format!(
                 "(sync-call '{} #t (hex-string->byte-vector \"{}\")))",
-                expression,
-                record,
-            ).as_str());
-	        assert!(
-		        result == String::from(expected),
-		        "Assertion failed: {} --> {} not {}",
-		        expression, result, expected,
-	        );
-	    },
-    )
+                expression, record,
+            )
+            .as_str(),
+        );
+        assert!(
+            result == String::from(expected),
+            "Assertion failed: {} --> {} not {}",
+            expression,
+            result,
+            expected,
+        );
+    })
 }
 
 #[test]

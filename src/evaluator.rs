@@ -1,19 +1,18 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
-
 #![allow(warnings)]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-use std::fmt::Write;
-use std::collections::HashMap;
-use std::ffi::{CString, CStr};
-use std::num::ParseIntError;
-use std::os::raw::c_char;
-use rand::RngCore;
-use rand::rngs::OsRng;
 use libc::free;
 use log::info;
+use rand::rngs::OsRng;
+use rand::RngCore;
+use std::collections::HashMap;
+use std::ffi::{CStr, CString};
+use std::fmt::Write;
+use std::num::ParseIntError;
+use std::os::raw::c_char;
 
 type PrimitiveFunction = unsafe extern "C" fn(*mut s7_scheme, s7_pointer) -> s7_pointer;
 
@@ -112,7 +111,7 @@ impl Evaluator {
                     sc,
                     s7_rootlet(sc),
                     s7_make_symbol(sc, primitive.as_ptr()),
-                    s7_make_symbol(sc, c"*removed*".as_ptr())
+                    s7_make_symbol(sc, c"*removed*".as_ptr()),
                 );
             }
 
@@ -132,16 +131,24 @@ impl Evaluator {
                     sc,
                     primitive.name.as_ptr(),
                     Some(primitive.code),
-                    primitive.args_required.try_into().unwrap(),
-                    primitive.args_optional.try_into().unwrap(),
+                    primitive
+                        .args_required
+                        .try_into()
+                        .expect("args_required conversion failed"),
+                    primitive
+                        .args_optional
+                        .try_into()
+                        .expect("args_optional conversion failed"),
                     primitive.args_rest,
                     primitive.description.as_ptr(),
                 );
             }
 
-            Self { sc, primitives: primitives_ }
+            Self {
+                sc,
+                primitives: primitives_,
+            }
         }
-
     }
 
     pub fn evaluate(&self, code: &str) -> String {
@@ -151,7 +158,8 @@ impl Evaluator {
                 "(catch #t (lambda () (eval (read (open-input-string \"{}\")))) (lambda x {}))",
                 code.replace("\\", "\\\\").replace("\"", "\\\""),
                 "`(error ',(car x) ,(apply format (cons #f (cadr x))))",
-            )).unwrap();
+            ))
+            .expect("failed to create CString for evaluation");
             let s7_obj = s7_eval_c_string(self.sc, wrapped.as_ptr());
             obj2str(self.sc, s7_obj)
         }
@@ -173,8 +181,15 @@ fn primitive_expression_to_byte_vector() -> Primitive {
         let s7_c_str = s7_object_to_c_string(sc, arg);
         let c_string = CStr::from_ptr(s7_c_str);
 
-        let bv = s7_make_byte_vector(sc, c_string.to_bytes().len() as i64, 1 as i64, std::ptr::null_mut());
-        for (i, b) in c_string.to_bytes().iter().enumerate() { s7_byte_vector_set(bv, i as i64, *b); }
+        let bv = s7_make_byte_vector(
+            sc,
+            c_string.to_bytes().len() as i64,
+            1 as i64,
+            std::ptr::null_mut(),
+        );
+        for (i, b) in c_string.to_bytes().iter().enumerate() {
+            s7_byte_vector_set(bv, i as i64, *b);
+        }
         free(s7_c_str as *mut libc::c_void);
         bv
     }
@@ -183,7 +198,9 @@ fn primitive_expression_to_byte_vector() -> Primitive {
         code,
         c"expression->byte-vector",
         c"(expression->byte-vector expr) convert a expression string to a byte vector",
-        1, 0, false,
+        1,
+        0,
+        false,
     )
 }
 
@@ -193,15 +210,21 @@ fn primitive_byte_vector_to_expression() -> Primitive {
 
         if !s7_is_byte_vector(arg) {
             return s7_wrong_type_arg_error(
-                sc, c"byte-vector->expression".as_ptr(), 1, arg,
-                c"a byte-vector".as_ptr())
+                sc,
+                c"byte-vector->expression".as_ptr(),
+                1,
+                arg,
+                c"a byte-vector".as_ptr(),
+            );
         }
 
-        let mut bytes = vec![39];  // quote so that it evaluates correctly
-        for i in 0..s7_vector_length(arg) { bytes.push(s7_byte_vector_ref(arg, i)) }
+        let mut bytes = vec![39]; // quote so that it evaluates correctly
+        for i in 0..s7_vector_length(arg) {
+            bytes.push(s7_byte_vector_ref(arg, i))
+        }
         bytes.push(0);
-
-        let c_string = CString::from_vec_with_nul(bytes).unwrap();
+        let c_string =
+            CString::from_vec_with_nul(bytes).expect("Invalid C string: missing null terminator");
         s7_eval_c_string(sc, c_string.as_ptr())
     }
 
@@ -209,7 +232,9 @@ fn primitive_byte_vector_to_expression() -> Primitive {
         code,
         c"byte-vector->expression",
         c"(byte-vector->expression bv) convert a byte vector to an expression",
-        1, 0, false,
+        1,
+        0,
+        false,
     )
 }
 
@@ -219,14 +244,20 @@ fn primitive_hex_string_to_byte_vector() -> Primitive {
 
         if !s7_is_string(arg) {
             return s7_wrong_type_arg_error(
-                sc, c"hex-string->byte-vector".as_ptr(), 1, arg,
-                c"a hex string".as_ptr())
+                sc,
+                c"hex-string->byte-vector".as_ptr(),
+                1,
+                arg,
+                c"a hex string".as_ptr(),
+            );
         }
 
         let s7_c_str = s7_object_to_c_string(sc, arg);
-        let hex_string = CStr::from_ptr(s7_c_str).to_str().unwrap();
+        let hex_string = CStr::from_ptr(s7_c_str)
+            .to_str()
+            .expect("Failed to convert C string to hex string");
 
-        let result: Result<Vec<u8>, ParseIntError> = (1..hex_string.len()-1)
+        let result: Result<Vec<u8>, ParseIntError> = (1..hex_string.len() - 1)
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex_string[i..i + 2], 16))
             .collect();
@@ -235,15 +266,20 @@ fn primitive_hex_string_to_byte_vector() -> Primitive {
 
         match result {
             Ok(result) => {
-                let bv = s7_make_byte_vector(sc, result.len() as i64, 1 as i64, std::ptr::null_mut());
-                for i in 0..result.len() { s7_byte_vector_set(bv, i as i64, result[i]); }
+                let bv =
+                    s7_make_byte_vector(sc, result.len() as i64, 1 as i64, std::ptr::null_mut());
+                for i in 0..result.len() {
+                    s7_byte_vector_set(bv, i as i64, result[i]);
+                }
                 bv
             }
-            _ => {
-                s7_wrong_type_arg_error(
-                    sc, c"hex-string->byte-vector".as_ptr(), 1, arg,
-                    c"a hex string".as_ptr())
-            }
+            _ => s7_wrong_type_arg_error(
+                sc,
+                c"hex-string->byte-vector".as_ptr(),
+                1,
+                arg,
+                c"a hex string".as_ptr(),
+            ),
         }
     }
 
@@ -251,7 +287,9 @@ fn primitive_hex_string_to_byte_vector() -> Primitive {
         code,
         c"hex-string->byte-vector",
         c"(hex-string->byte-vector str) convert a hex string to a byte vector",
-        1, 0, false,
+        1,
+        0,
+        false,
     )
 }
 
@@ -261,18 +299,26 @@ fn primitive_byte_vector_to_hex_string() -> Primitive {
 
         if !s7_is_byte_vector(arg) {
             return s7_wrong_type_arg_error(
-                sc, c"byte-vector->hex-string".as_ptr(), 1, arg,
-                c"a byte-vector".as_ptr())
+                sc,
+                c"byte-vector->hex-string".as_ptr(),
+                1,
+                arg,
+                c"a byte-vector".as_ptr(),
+            );
         }
 
         let mut bytes = vec![0 as u8; s7_vector_length(arg) as usize];
-        for i in 0..bytes.len() as usize { bytes[i] = s7_byte_vector_ref(arg, i as i64); }
+        for i in 0..bytes.len() as usize {
+            bytes[i] = s7_byte_vector_ref(arg, i as i64);
+        }
 
         let mut string = String::with_capacity(bytes.len() * 2);
-        for b in bytes { write!(&mut string,"{:02x}", b).unwrap(); }
+        for b in bytes {
+            write!(&mut string, "{:02x}", b).expect("Failed to write byte to hex string");
+        }
 
         // todo: this might cause a pointer issue
-        let c_string = CString::new(string).unwrap();
+        let c_string = CString::new(string).expect("Failed to create C string from hex string");
         s7_object_to_string(sc, s7_make_string(sc, c_string.as_ptr()), false)
     }
 
@@ -280,7 +326,9 @@ fn primitive_byte_vector_to_hex_string() -> Primitive {
         code,
         c"byte-vector->hex-string",
         c"(byte-vector->hex-string bv) convert a byte vector to a hex string",
-        1, 0, false,
+        1,
+        0,
+        false,
     )
 }
 
@@ -290,17 +338,28 @@ fn primitive_random_byte_vector() -> Primitive {
 
         if !s7_is_integer(arg) || s7_integer(arg) < 0 {
             return s7_wrong_type_arg_error(
-                sc, c"random-byte-vector".as_ptr(), 1, arg,
-                c"a non-negative integer".as_ptr())
+                sc,
+                c"random-byte-vector".as_ptr(),
+                1,
+                arg,
+                c"a non-negative integer".as_ptr(),
+            );
         }
 
         let length = s7_integer(arg);
         let mut rng = OsRng;
-        let mut bytes = vec![0u8; length.try_into().unwrap()];
+        let mut bytes = vec![
+            0u8;
+            length
+                .try_into()
+                .expect("Length exceeds system memory limits")
+        ];
         rng.fill_bytes(&mut bytes);
 
         let bv = s7_make_byte_vector(sc, length as i64, 1, std::ptr::null_mut());
-        for i in 0..length as usize { s7_byte_vector_set(bv, i as i64, bytes[i]); }
+        for i in 0..length as usize {
+            s7_byte_vector_set(bv, i as i64, bytes[i]);
+        }
         bv
     }
 

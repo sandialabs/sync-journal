@@ -1,6 +1,6 @@
-use std::fs;
+use journal_sdk::{Word, JOURNAL, SIZE};
 use rand::RngCore;
-use journal_sdk::{JOURNAL, Word, SIZE};
+use std::fs;
 
 pub fn setup() -> impl Fn(&str, &str) {
     let mut seed: Word = [0 as u8; SIZE];
@@ -8,25 +8,28 @@ pub fn setup() -> impl Fn(&str, &str) {
     let record = hex::encode(seed);
 
     assert!(
-        JOURNAL.evaluate(format!(
-            "(sync-create (hex-string->byte-vector \"{}\"))",
-            record,
-        ).as_str())== "#t",
+        JOURNAL
+            .evaluate(format!("(sync-create (hex-string->byte-vector \"{}\"))", record,).as_str())
+            == "#t",
         "Unable to set up new Journal",
     );
 
-    move | expression, expected | {
-	    let result = JOURNAL.evaluate(format!(
-            "(sync-call '{} #t (hex-string->byte-vector \"{}\"))",
-            expression,
-            record,
-        ).as_str());
+    move |expression, expected| {
+        let result = JOURNAL.evaluate(
+            format!(
+                "(sync-call '{} #t (hex-string->byte-vector \"{}\"))",
+                expression, record,
+            )
+            .as_str(),
+        );
 
-	    assert!(
-	        result == String::from(expected),
-	        "Assertion failed: {} --> {} not {}",
-	        expression, result, expected,
-	    );
+        assert!(
+            result == String::from(expected),
+            "Assertion failed: {} --> {} not {}",
+            expression,
+            result,
+            expected,
+        );
     }
 }
 
@@ -35,8 +38,14 @@ fn test_standard() {
     let assert = setup();
     assert("4", "4");
     assert("(+ 2 2)", "4");
-    assert("(/ 1 0)", "(error 'division-by-zero \"/: division by zero, (/ 1 0)\")");
-    assert("\"x", "(error 'string-read-error \"end of input encountered while in a string\")");
+    assert(
+        "(/ 1 0)",
+        "(error 'division-by-zero \"/: division by zero, (/ 1 0)\")",
+    );
+    assert(
+        "\"x",
+        "(error 'string-read-error \"end of input encountered while in a string\")",
+    );
 }
 
 #[test]
@@ -64,7 +73,10 @@ fn test_blockchain() {
     assert("(write (a 1) (b 2))", "success");
     assert("(size)", "3");
     assert("(read 2 a)", "1");
-    assert("(uninstall \"test-password\")", "\"Uninstalled blockchain interface\"");
+    assert(
+        "(uninstall \"test-password\")",
+        "\"Uninstalled blockchain interface\"",
+    );
     assert("(+ 2 2)", "4");
 }
 
@@ -84,8 +96,14 @@ fn test_evaluator() {
     assert("(undefine a)", "()");
     assert("(byte-vector->hex-string #u(0 255))", "\"00ff\"");
     assert("(hex-string->byte-vector \"00ff\")", "#u(0 255)");
-    assert("(expression->byte-vector '(+ 2 2))", "#u(40 43 32 50 32 50 41)");
-    assert("(byte-vector->expression #u(40 43 32 50 32 50 41))", "(+ 2 2)");
+    assert(
+        "(expression->byte-vector '(+ 2 2))",
+        "#u(40 43 32 50 32 50 41)",
+    );
+    assert(
+        "(byte-vector->expression #u(40 43 32 50 32 50 41))",
+        "(+ 2 2)",
+    );
 }
 
 #[test]
@@ -136,6 +154,9 @@ fn test_state() {
     assert("(define x (inlet 'a 1 'b 2))", "(inlet 'a 1 'b 2)");
     assert("x", "(inlet 'a 1 'b 2)");
 
-    assert("(begin (define add2 (state-dump (lambda (x) (+ x 2)))) #t)", "#t");
+    assert(
+        "(begin (define add2 (state-dump (lambda (x) (+ x 2)))) #t)",
+        "#t",
+    );
     assert("((state-load add2) 2)", "4");
 }

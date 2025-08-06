@@ -1,11 +1,11 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use log::info;
-use std::net::{IpAddr, Ipv6Addr};
-use rocket::data::{Limits, ToByteUnit};
-use rocket::{get, post, routes};
-use rocket::response::content::RawHtml;
-use rocket::config::Config as RocketConfig;
 use journal_sdk::{Config, JOURNAL};
+use log::info;
+use rocket::config::Config as RocketConfig;
+use rocket::data::{Limits, ToByteUnit};
+use rocket::response::content::RawHtml;
+use rocket::{get, post, routes};
+use std::net::{IpAddr, Ipv6Addr};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MICRO: f64 = 1000000.0;
 
@@ -29,7 +29,8 @@ async fn index() -> RawHtml<String> {
 
 #[get("/interface", format = "text/html")]
 async fn inform() -> RawHtml<String> {
-    RawHtml(String::from(r#"<!DOCTYPE html>
+    RawHtml(String::from(
+        r#"<!DOCTYPE html>
 <html>
     <head>
  <h2>Interface</h2>
@@ -68,7 +69,8 @@ async fn inform() -> RawHtml<String> {
  </script>
     </body>
 </html>
-"#))
+"#,
+    ))
 }
 
 #[post("/interface", data = "<query>", rank = 1)]
@@ -90,29 +92,40 @@ async fn main() {
     if &config.evaluate != "" {
         let result = JOURNAL.evaluate(&config.evaluate);
         println!("{}", result);
-        return
+        return;
     }
 
     let mut rocket_config = RocketConfig::default();
     rocket_config.port = config.port;
     rocket_config.address = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0));
     rocket_config.limits = Limits::new().limit("string", 1_i32.mebibytes());
-    
+
     let period = 2_f64.powi(config.periodicity);
 
     if config.step != "" {
         tokio::spawn(async move {
             let mut step = 0;
-            let start = ((
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64 /
-                    (period * MICRO)
-            ).ceil() * (period * MICRO)) as u128;
+            let start = ((SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Failed to get system time")
+                .as_micros() as f64
+                / (period * MICRO))
+                .ceil()
+                * (period * MICRO)) as u128;
 
             loop {
                 let until = start + step * (period * MICRO) as u128;
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros();
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Failed to get system time")
+                    .as_micros();
                 if now < until {
-                    tokio::time::sleep(Duration::from_micros((until - now).try_into().unwrap())).await;
+                    tokio::time::sleep(Duration::from_micros(
+                        (until - now)
+                            .try_into()
+                            .expect("Failed to convert duration"),
+                    ))
+                    .await;
                 }
                 let result = JOURNAL.evaluate(&config.step);
                 info!("Step ({:.6}): {}", until as f64 / MICRO, result);
@@ -122,11 +135,7 @@ async fn main() {
     }
 
     let _ = rocket::build()
-        .mount("/", routes![
-            index,
-            inform,
-            evaluate,
-        ])
+        .mount("/", routes![index, inform, evaluate,])
         .configure(rocket_config)
         .launch()
         .await;

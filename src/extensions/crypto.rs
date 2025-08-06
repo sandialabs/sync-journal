@@ -1,10 +1,10 @@
-use std::panic;
-use crate::evaluator::Primitive;
 use crate::evaluator as s7;
+use crate::evaluator::Primitive;
+use std::panic;
 
-use sha2::{Sha256, Digest};
-use crystals_dilithium::sign::lvl2::*;
 use crystals_dilithium::dilithium2::*;
+use crystals_dilithium::sign::lvl2::*;
+use sha2::{Digest, Sha256};
 
 unsafe fn bv2vec(bv: s7::s7_pointer) -> Vec<u8> {
     let mut vec = vec![];
@@ -16,7 +16,9 @@ unsafe fn bv2vec(bv: s7::s7_pointer) -> Vec<u8> {
 
 unsafe fn vec2bv(sc: *mut s7::s7_scheme, vec: Vec<u8>) -> s7::s7_pointer {
     let bv = s7::s7_make_byte_vector(sc, vec.len() as i64, 1, std::ptr::null_mut());
-    for i in 0..vec.len() { s7::s7_byte_vector_set(bv, i as i64, vec[i]); }
+    for i in 0..vec.len() {
+        s7::s7_byte_vector_set(bv, i as i64, vec[i]);
+    }
     bv
 }
 
@@ -24,10 +26,14 @@ unsafe fn crypto_error(sc: *mut s7::s7_scheme) -> s7::s7_pointer {
     s7::s7_error(
         sc,
         s7::s7_make_symbol(sc, c"crypto-error".as_ptr()),
-        s7::s7_list(sc, 1, s7::s7_make_string(
+        s7::s7_list(
             sc,
-            c"cryptographic library encountered unexpected error".as_ptr(),
-        )),
+            1,
+            s7::s7_make_string(
+                sc,
+                c"cryptographic library encountered unexpected error".as_ptr(),
+            ),
+        ),
     )
 }
 
@@ -37,9 +43,12 @@ pub fn primitive_s7_crypto_generate() -> Primitive {
 
         if !s7::s7_is_byte_vector(seed) {
             return s7::s7_wrong_type_arg_error(
-                sc, c"crypto-sign".as_ptr(), 1, seed,
+                sc,
+                c"crypto-sign".as_ptr(),
+                1,
+                seed,
                 c"a byte-vector".as_ptr(),
-            )
+            );
         }
 
         let seed_vec = bv2vec(seed);
@@ -60,7 +69,9 @@ pub fn primitive_s7_crypto_generate() -> Primitive {
         code,
         c"crypto-generate",
         c"(crypto-generate seed) returns a public/private key pair derived from the seed",
-        1, 0, false,
+        1,
+        0,
+        false,
     )
 }
 
@@ -72,16 +83,19 @@ pub fn primitive_s7_crypto_sign() -> Primitive {
         for (i, v) in [private_key, message].iter().enumerate() {
             if !s7::s7_is_byte_vector(v.clone()) {
                 return s7::s7_wrong_type_arg_error(
-                    sc, c"crypto-sign".as_ptr(), i.try_into().unwrap(), v.clone(),
+                    sc,
+                    c"crypto-sign".as_ptr(),
+                    i.try_into()
+                        .expect("Failed to convert crypto-sign length to correct type"),
+                    v.clone(),
                     c"a byte-vector".as_ptr(),
-                )
+                );
             }
         }
 
         let message_vec = bv2vec(message);
         let private_key_vec = bv2vec(private_key);
         let digest_vec = Sha256::digest(&message_vec).to_vec();
-
 
         match panic::catch_unwind(|| {
             let mut sig: [u8; SIGNBYTES] = [0; SIGNBYTES];
@@ -97,7 +111,9 @@ pub fn primitive_s7_crypto_sign() -> Primitive {
         code,
         c"crypto-sign",
         c"(crypto-sign private-key message) return a cryptographic signature",
-        2, 0, false,
+        2,
+        0,
+        false,
     )
 }
 
@@ -110,9 +126,13 @@ pub fn primitive_s7_crypto_verify() -> Primitive {
         for (i, v) in [public_key, signature, message].iter().enumerate() {
             if !s7::s7_is_byte_vector(v.clone()) {
                 return s7::s7_wrong_type_arg_error(
-                    sc, c"crypto-sign".as_ptr(), i.try_into().unwrap(), v.clone(),
+                    sc,
+                    c"crypto-sign".as_ptr(),
+                    i.try_into()
+                        .expect("Failed to convert index to expected type"),
+                    v.clone(),
                     c"a byte-vector".as_ptr(),
-                )
+                );
             }
         }
 
@@ -121,12 +141,12 @@ pub fn primitive_s7_crypto_verify() -> Primitive {
         let public_key_vec = bv2vec(public_key);
         let digest_vec = Sha256::digest(message_vec).to_vec();
 
-        match panic::catch_unwind(|| {
-            match verify(&signature_vec, &digest_vec, &public_key_vec) {
+        match panic::catch_unwind(
+            || match verify(&signature_vec, &digest_vec, &public_key_vec) {
                 true => s7::s7_make_boolean(sc, true),
                 false => s7::s7_make_boolean(sc, false),
-            }
-        }) {
+            },
+        ) {
             Ok(result) => result,
             Err(_) => crypto_error(sc),
         }
