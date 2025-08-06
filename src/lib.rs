@@ -10,7 +10,7 @@ use once_cell::sync::Lazy;
 pub use crate::config::Config;
 pub use crate::persistor::{Word, SIZE};
 use crate::persistor::{PERSISTOR, MemoryPersistor, Persistor, PersistorAccessError};
-use crate::evaluator::{Evaluator, Primitive, Type, to_str_or_err};
+use crate::evaluator::{Evaluator, Primitive, Type, obj2str};
 use crate::extensions::crypto::{
     primitive_s7_crypto_generate,
     primitive_s7_crypto_sign,
@@ -756,8 +756,7 @@ fn primitive_s7_sync_call() -> Primitive {
 
         match PERSISTOR.root_get(record) {
             Ok(_) => {
-                let message = to_str_or_err(
-                    CStr::from_ptr(s7::s7_object_to_c_string(sc, message_expr)));
+                let message = obj2str(sc, message_expr);
                 if s7::s7_boolean(sc, blocking) {
                     let result = JOURNAL.evaluate_record(record, message.as_str());
                     let c_result = CString::new(format!("(quote {})", result)).unwrap();
@@ -792,21 +791,17 @@ fn primitive_s7_sync_call() -> Primitive {
 
 fn primitive_s7_sync_http() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let obj2str = | obj | {
-            CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().unwrap().to_owned()
-        };
-
         let vec2s7 = | vector: Vec<u8> | {
             let bv = s7::s7_make_byte_vector(sc, vector.len() as i64, 1, std::ptr::null_mut());
             for i in 0..vector.len() { s7::s7_byte_vector_set(bv, i as i64, vector[i]); }
             bv
         };
 
-        let method = obj2str(s7::s7_car(args));
-        let url = obj2str(s7::s7_cadr(args));
+        let method = obj2str(sc, s7::s7_car(args));
+        let url = obj2str(sc, s7::s7_cadr(args));
 
         let body = if s7::s7_list_length(sc, args) >= 3 {
-            obj2str(s7::s7_caddr(args))
+            obj2str(sc, s7::s7_caddr(args))
         } else {
             String::from("")
         };
@@ -867,10 +862,6 @@ fn primitive_s7_sync_http() -> Primitive {
 
 fn primitive_s7_sync_remote() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let obj2str = | obj | {
-            CStr::from_ptr(s7::s7_object_to_c_string(sc, obj)).to_str().unwrap().to_owned()
-        };
-
         let vec2s7 = | mut vector: Vec<u8> | {
             vector.insert(0, 39); // add quote character so that it evaluates correctly
             vector.push(0);
@@ -878,9 +869,9 @@ fn primitive_s7_sync_remote() -> Primitive {
             s7::s7_eval_c_string(sc, c_string.as_ptr())
         };
 
-        let url = obj2str(s7::s7_car(args));
+        let url = obj2str(sc, s7::s7_car(args));
 
-        let body = obj2str(s7::s7_cadr(args));
+        let body = obj2str(sc, s7::s7_cadr(args));
 
         let cache_mutex = {
             let session = SESSIONS.lock().unwrap();

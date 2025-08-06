@@ -74,10 +74,15 @@ impl Type {
     }
 }
 
-pub fn to_str_or_err(expression: &CStr) -> String {
-    match expression.to_str() {
-        Ok(expr) => expr.to_owned(),
-        Err(_) => format!("(error 'encoding-error \"Failed to encode string\")"),
+pub fn obj2str(sc: *mut s7_scheme, obj: *mut s7_cell) -> String {
+    unsafe {
+        let expr = s7_object_to_c_string(sc, obj);
+        let cstr = CStr::from_ptr(expr);
+        free(expr as *mut libc::c_void);
+        match cstr.to_str() {
+            Ok(expr) => expr.to_owned(),
+            Err(_) => format!("(error 'encoding-error \"Failed to encode string\")"),
+        }
     }
 }
 
@@ -155,10 +160,7 @@ impl Evaluator {
                 "`(error ',(car x) ,(apply format (cons #f (cadr x))))",
             )).unwrap();
             let s7_obj = s7_eval_c_string(self.sc, wrapped.as_ptr());
-            let output = s7_object_to_c_string(self.sc, s7_obj);
-            let ret = to_str_or_err(CStr::from_ptr(output));
-            free(output as *mut libc::c_void);
-            ret
+            obj2str(self.sc, s7_obj)
         }
     }
 }
