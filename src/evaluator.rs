@@ -77,11 +77,12 @@ pub fn obj2str(sc: *mut s7_scheme, obj: *mut s7_cell) -> String {
     unsafe {
         let expr = s7_object_to_c_string(sc, obj);
         let cstr = CStr::from_ptr(expr);
-        free(expr as *mut libc::c_void);
-        match cstr.to_str() {
+        let result = match cstr.to_str() {
             Ok(expr) => expr.to_owned(),
             Err(_) => format!("(error 'encoding-error \"Failed to encode string\")"),
-        }
+        };
+        free(expr as *mut libc::c_void);
+        result
     }
 }
 
