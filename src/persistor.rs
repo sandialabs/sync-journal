@@ -33,17 +33,25 @@ pub trait Persistor {
     fn root_get(&self, handle: Word) -> Result<Word, PersistorAccessError>;
     fn root_set(&self, handle: Word, old: Word, new: Word) -> Result<Word, PersistorAccessError>;
     fn root_delete(&self, handle: Word) -> Result<(), PersistorAccessError>;
-    fn branch_set(&self, left: Word, right: Word) -> Result<Word, PersistorAccessError>;
-    fn branch_get(&self, branch: Word) -> Result<(Word, Word), PersistorAccessError>;
+    fn branch_set(
+        &self,
+        left: Word,
+        right: Word,
+        digest: Word,
+    ) -> Result<Word, PersistorAccessError>;
+    fn branch_get(&self, branch: Word) -> Result<(Word, Word, Word), PersistorAccessError>;
     fn leaf_set(&self, content: Vec<u8>) -> Result<Word, PersistorAccessError>;
     fn leaf_get(&self, leaf: Word) -> Result<Vec<u8>, PersistorAccessError>;
+    fn stump_set(&self, digest: Word) -> Result<Word, PersistorAccessError>;
+    fn stump_get(&self, stump: Word) -> Result<Word, PersistorAccessError>;
 }
 
 #[derive(Clone)]
 pub struct MemoryPersistor {
     roots: Arc<Mutex<HashMap<Word, (Word, bool)>>>,
-    branches: Arc<Mutex<HashMap<Word, (Word, Word)>>>,
+    branches: Arc<Mutex<HashMap<Word, (Word, Word, Word)>>>,
     leaves: Arc<Mutex<HashMap<Word, Vec<u8>>>>,
+    stumps: Arc<Mutex<HashMap<Word, Word>>>,
     references: Arc<Mutex<HashMap<Word, usize>>>,
 }
 
@@ -53,6 +61,7 @@ impl MemoryPersistor {
             roots: Arc::new(Mutex::new(HashMap::new())),
             branches: Arc::new(Mutex::new(HashMap::new())),
             leaves: Arc::new(Mutex::new(HashMap::new())),
+            stumps: Arc::new(Mutex::new(HashMap::new())),
             references: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -80,7 +89,7 @@ impl MemoryPersistor {
                 } else {
                     references.remove(&node);
                     let mut branches = self.branches.lock().expect("Failed to lock branches");
-                    if let Some((left, right)) = branches.get(&node) {
+                    if let Some((left, right, _)) = branches.get(&node) {
                         let left_ = *left;
                         let right_ = *right;
                         branches.remove(&node);
@@ -90,8 +99,11 @@ impl MemoryPersistor {
                         self.reference_decrement(right_);
                     } else {
                         let mut leaves = self.leaves.lock().expect("Failed to lock leaves");
+                        let mut stumps = self.stumps.lock().expect("Failed to lock stumps");
                         if let Some(_) = leaves.get(&node) {
                             leaves.remove(&node);
+                        } else if let Some(_) = stumps.get(&node) {
+                            stumps.remove(&node);
                         }
                     }
                 }
@@ -202,30 +214,37 @@ impl Persistor for MemoryPersistor {
         }
     }
 
-    fn branch_set(&self, left: Word, right: Word) -> Result<Word, PersistorAccessError> {
-        let mut joined = [0 as u8; SIZE * 2];
+    fn branch_set(
+        &self,
+        left: Word,
+        right: Word,
+        digest: Word,
+    ) -> Result<Word, PersistorAccessError> {
+        let mut joined = [0 as u8; SIZE * 3];
         joined[..SIZE].copy_from_slice(&left);
-        joined[SIZE..].copy_from_slice(&right);
+        joined[SIZE..SIZE * 2].copy_from_slice(&right);
+        joined[SIZE * 2..].copy_from_slice(&digest);
 
         let branch = Sha256::digest(joined);
         self.branches
             .lock()
             .expect("Failed to lock branches map")
-            .insert(branch.into(), (left, right));
+            .insert(branch.into(), (left, right, digest));
         self.reference_increment(left);
         self.reference_increment(right);
         Ok(Word::from(branch))
     }
 
-    fn branch_get(&self, branch: Word) -> Result<(Word, Word), PersistorAccessError> {
+    fn branch_get(&self, branch: Word) -> Result<(Word, Word, Word), PersistorAccessError> {
         let branches = self.branches.lock().expect("Failed to lock branches map");
         match branches.get(&branch) {
-            Some((left, right)) => {
-                let mut joined = [0 as u8; SIZE * 2];
+            Some((left, right, digest)) => {
+                let mut joined = [0 as u8; SIZE * 3];
                 joined[..SIZE].copy_from_slice(left);
-                joined[SIZE..].copy_from_slice(right);
+                joined[SIZE..SIZE * 2].copy_from_slice(right);
+                joined[SIZE * 2..].copy_from_slice(digest);
                 assert!(Vec::from(branch) == Sha256::digest(joined).to_vec());
-                Ok((*left, *right))
+                Ok((*left, *right, *digest))
             }
             None => Err(PersistorAccessError(format!(
                 "Branch {:?} not found",
@@ -253,6 +272,26 @@ impl Persistor for MemoryPersistor {
             None => Err(PersistorAccessError(format!("Leaf {:?} not found", leaf))),
         }
     }
+
+    fn stump_set(&self, digest: Word) -> Result<Word, PersistorAccessError> {
+        let stump = Sha256::digest(digest);
+        self.stumps
+            .lock()
+            .expect("Failed to lock stump map")
+            .insert(stump.into(), digest);
+        Ok(Word::from(stump))
+    }
+
+    fn stump_get(&self, stump: Word) -> Result<Word, PersistorAccessError> {
+        let stumps = self.stumps.lock().expect("Failed to lock stumps map");
+        match stumps.get(&stump) {
+            Some(digest) => {
+                assert!(Vec::from(stump) == Sha256::digest(Vec::from(digest)).to_vec());
+                Ok(*digest)
+            }
+            None => Err(PersistorAccessError(format!("Stump {:?} not found", stump))),
+        }
+    }
 }
 
 pub struct DatabasePersistor {
@@ -269,6 +308,7 @@ impl DatabasePersistor {
             ColumnFamilyDescriptor::new("roots", Options::default()),
             ColumnFamilyDescriptor::new("branches", Options::default()),
             ColumnFamilyDescriptor::new("leaves", Options::default()),
+            ColumnFamilyDescriptor::new("stumps", Options::default()),
             ColumnFamilyDescriptor::new("references", Options::default()),
         ];
         let persistor = Self {
@@ -277,6 +317,7 @@ impl DatabasePersistor {
             ),
         };
 
+        // TODO: clear this due to memory leakage
         {
             let mut handles: Vec<Word> = Vec::new();
             let db = persistor
@@ -341,6 +382,7 @@ impl DatabasePersistor {
             .cf_handle("branches")
             .expect("Failed to get branches handle");
         let leaves = db.cf_handle("leaves").expect("Failed to get leaves handle");
+        let stumps = db.cf_handle("stumps").expect("Failed to get stumps handle");
         let references = db
             .cf_handle("references")
             .expect("Failed to get references handle");
@@ -359,7 +401,7 @@ impl DatabasePersistor {
                         .expect("Failed to delete reference");
                     if let Some(value) = db.get_cf(branches, node).expect("Failed to get branch") {
                         let left = &value[..SIZE].try_into().expect("Invalid left node bytes");
-                        let right = &value[SIZE..].try_into().expect("Invalid right node bytes");
+                        let right = &value[SIZE..SIZE * 2].try_into().expect("Invalid right node bytes");
                         db.delete_cf(branches, node)
                             .expect("Failed to delete branch");
                         drop(db);
@@ -368,6 +410,10 @@ impl DatabasePersistor {
                     } else {
                         if let Some(_) = db.get_cf(leaves, node).expect("Failed to get leaf") {
                             db.delete_cf(leaves, node).expect("Failed to delete leaf");
+                        } else if let Some(_) =
+                            db.get_cf(stumps, node).expect("Failed to get stump")
+                        {
+                            db.delete_cf(stumps, node).expect("Failed to delete stump");
                         }
                     }
                 }
@@ -523,10 +569,16 @@ impl Persistor for DatabasePersistor {
         }
     }
 
-    fn branch_set(&self, left: Word, right: Word) -> Result<Word, PersistorAccessError> {
-        let mut joined = [0 as u8; SIZE * 2];
+    fn branch_set(
+        &self,
+        left: Word,
+        right: Word,
+        digest: Word,
+    ) -> Result<Word, PersistorAccessError> {
+        let mut joined = [0 as u8; SIZE * 3];
         joined[..SIZE].copy_from_slice(&left);
-        joined[SIZE..].copy_from_slice(&right);
+        joined[SIZE..SIZE * 2].copy_from_slice(&right);
+        joined[SIZE * 2..].copy_from_slice(&digest);
 
         let branch = Sha256::digest(joined);
 
@@ -543,7 +595,7 @@ impl Persistor for DatabasePersistor {
         Ok(Word::from(branch))
     }
 
-    fn branch_get(&self, branch: Word) -> Result<(Word, Word), PersistorAccessError> {
+    fn branch_get(&self, branch: Word) -> Result<(Word, Word, Word), PersistorAccessError> {
         let db = self.db.lock().expect("Failed to acquire db lock");
         let branches = db
             .cf_handle("branches")
@@ -552,8 +604,13 @@ impl Persistor for DatabasePersistor {
             Ok(Some(value)) => {
                 assert!(Vec::from(branch) == Sha256::digest(value.clone()).to_vec());
                 let left = &value[..SIZE].try_into().expect("Invalid left branch size");
-                let right = &value[SIZE..].try_into().expect("Invalid right branch size");
-                Ok((*left, *right))
+                let right = &value[SIZE..SIZE * 2]
+                    .try_into()
+                    .expect("Invalid right branch size");
+                let digest = &value[SIZE * 2..]
+                    .try_into()
+                    .expect("Invalid right branch size");
+                Ok((*left, *right, *digest))
             }
             Ok(None) => Err(PersistorAccessError(format!(
                 "Branch {:?} not found",
@@ -581,6 +638,33 @@ impl Persistor for DatabasePersistor {
                 Ok(content.to_vec())
             }
             Ok(None) => Err(PersistorAccessError(format!("Leaf {:?} not found", leaf))),
+            Err(e) => Err(PersistorAccessError(format!("{}", e))),
+        }
+    }
+
+    fn stump_set(&self, digest: Word) -> Result<Word, PersistorAccessError> {
+        let stump = Word::from(Sha256::digest(Vec::from(digest)));
+        let db = self.db.lock().expect("Failed to acquire db lock");
+        let stumps = db.cf_handle("stumps").expect("Failed to get stumps handle");
+        db.put_cf(stumps, stump, digest)
+            .expect("Failed to put stump");
+        Ok(stump)
+    }
+
+    fn stump_get(&self, stump: Word) -> Result<Word, PersistorAccessError> {
+        let db = self.db.lock().expect("Failed to acquire db lock");
+        let stumps = db.cf_handle("stumps").expect("Failed to get stumps handle");
+        match db.get_cf(stumps, stump) {
+            Ok(Some(digest)) => {
+                assert!(stump == *Sha256::digest(digest.clone()));
+                Ok((&(*digest)[..SIZE])
+                    .try_into()
+                    .expect("Invalid left node bytes"))
+            }
+            Ok(None) => Err(PersistorAccessError(format!(
+                "Stumps {:?} not found",
+                stump
+            ))),
             Err(e) => Err(PersistorAccessError(format!("{}", e))),
         }
     }
@@ -628,11 +712,11 @@ mod tests {
             persistor
                 .branch_get(
                     persistor
-                        .branch_set(zeros, zeros)
+                        .branch_set(zeros, zeros, zeros)
                         .expect("Failed to set branch"),
                 )
                 .expect("Failed to get branch")
-                == (zeros, zeros)
+                == (zeros, zeros, zeros)
         );
 
         assert!(
@@ -659,21 +743,29 @@ mod tests {
     #[test]
     fn test_memory_garbage() {
         let persistor = MemoryPersistor::new();
-
+        let zeros: Word = [0 as u8; SIZE];
         let handle: Word = [0 as u8; SIZE];
+
         let leaf_0 = persistor.leaf_set(vec![0]).expect("Failed to set leaf 0");
         let leaf_1 = persistor.leaf_set(vec![1]).expect("Failed to set leaf 1");
         let leaf_2 = persistor.leaf_set(vec![2]).expect("Failed to set leaf 2");
 
+        let stump_0 = persistor
+            .stump_set([0 as u8; SIZE])
+            .expect("Failed to set stump 0");
+
         let branch_a = persistor
-            .branch_set(leaf_0, leaf_1)
+            .branch_set(leaf_0, leaf_1, zeros)
             .expect("Failed to set branch A");
         let branch_b = persistor
-            .branch_set(branch_a, leaf_2)
+            .branch_set(branch_a, leaf_2, zeros)
+            .expect("Failed to set branch B");
+        let branch_c = persistor
+            .branch_set(branch_b, stump_0, zeros)
             .expect("Failed to set branch B");
 
         persistor
-            .root_new(handle, branch_b)
+            .root_new(handle, branch_c)
             .expect("Failed to create new root");
 
         assert!(persistor.roots.lock().expect("Failed to lock roots").len() == 1);
@@ -683,7 +775,7 @@ mod tests {
                 .lock()
                 .expect("Failed to lock branches")
                 .len()
-                == 2
+                == 3
         );
         assert!(
             persistor
@@ -695,19 +787,27 @@ mod tests {
         );
         assert!(
             persistor
+                .stumps
+                .lock()
+                .expect("Failed to lock leaves")
+                .len()
+                == 1
+        );
+        assert!(
+            persistor
                 .references
                 .lock()
                 .expect("Failed to lock references")
                 .len()
-                == 5
+                == 7
         );
 
         let leaf_3 = persistor.leaf_set(vec![3]).expect("Failed to set leaf 3");
-        let branch_c = persistor
-            .branch_set(leaf_2, leaf_3)
-            .expect("Failed to set branch C");
+        let branch_d = persistor
+            .branch_set(leaf_2, leaf_3, zeros)
+            .expect("Failed to set branch D");
         persistor
-            .root_set(handle, branch_b, branch_c)
+            .root_set(handle, branch_c, branch_d)
             .expect("Failed to set root");
 
         assert!(persistor.roots.lock().expect("Failed to lock roots").len() == 1);
@@ -729,6 +829,14 @@ mod tests {
         );
         assert!(
             persistor
+                .stumps
+                .lock()
+                .expect("Failed to lock stumps")
+                .len()
+                == 0
+        );
+        assert!(
+            persistor
                 .references
                 .lock()
                 .expect("Failed to lock references")
@@ -742,21 +850,28 @@ mod tests {
         let db = ".test-database-garbage";
         let _ = fs::remove_dir_all(db);
         let persistor = DatabasePersistor::new(db);
-
+        let zeros: Word = [0 as u8; SIZE];
         let handle: Word = [0 as u8; SIZE];
         let leaf_0 = persistor.leaf_set(vec![0]).expect("Failed to set leaf 0");
         let leaf_1 = persistor.leaf_set(vec![1]).expect("Failed to set leaf 1");
         let leaf_2 = persistor.leaf_set(vec![2]).expect("Failed to set leaf 2");
 
+        let stump_0 = persistor
+            .stump_set([0 as u8; SIZE])
+            .expect("Failed to set stump 0");
+
         let branch_a = persistor
-            .branch_set(leaf_0, leaf_1)
+            .branch_set(leaf_0, leaf_1, zeros)
             .expect("Failed to set branch A");
         let branch_b = persistor
-            .branch_set(branch_a, leaf_2)
+            .branch_set(branch_a, leaf_2, zeros)
             .expect("Failed to set branch B");
+        let branch_c = persistor
+            .branch_set(branch_b, stump_0, zeros)
+            .expect("Failed to set branch C");
 
         persistor
-            .root_new(handle, branch_b)
+            .root_new(handle, branch_c)
             .expect("Failed to create new root");
 
         let cf_count = |mdb: &Mutex<DB>, cf| {
@@ -770,23 +885,25 @@ mod tests {
 
         {
             assert!(cf_count(&persistor.db, "roots") == 1);
-            assert!(cf_count(&persistor.db, "branches") == 2);
+            assert!(cf_count(&persistor.db, "branches") == 3);
             assert!(cf_count(&persistor.db, "leaves") == 3);
-            assert!(cf_count(&persistor.db, "references") == 5);
+            assert!(cf_count(&persistor.db, "stumps") == 1);
+            assert!(cf_count(&persistor.db, "references") == 7);
         }
 
         let leaf_3 = persistor.leaf_set(vec![3]).expect("Failed to set leaf 3");
-        let branch_c = persistor
-            .branch_set(leaf_2, leaf_3)
-            .expect("Failed to set branch C");
+        let branch_d = persistor
+            .branch_set(leaf_2, leaf_3, zeros)
+            .expect("Failed to set branch D");
         persistor
-            .root_set(handle, branch_b, branch_c)
+            .root_set(handle, branch_c, branch_d)
             .expect("Failed to set root");
 
         {
             assert!(cf_count(&persistor.db, "roots") == 1);
             assert!(cf_count(&persistor.db, "branches") == 1);
             assert!(cf_count(&persistor.db, "leaves") == 2);
+            assert!(cf_count(&persistor.db, "stumps") == 0);
             assert!(cf_count(&persistor.db, "references") == 3);
         }
 

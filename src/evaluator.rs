@@ -223,9 +223,15 @@ fn primitive_byte_vector_to_expression() -> Primitive {
             bytes.push(s7_byte_vector_ref(arg, i))
         }
         bytes.push(0);
-        let c_string =
-            CString::from_vec_with_nul(bytes).expect("Invalid C string: missing null terminator");
-        s7_eval_c_string(sc, c_string.as_ptr())
+
+        match CString::from_vec_with_nul(bytes) {
+            Ok(c_string) => s7_eval_c_string(sc, c_string.as_ptr()),
+            Err(_) => s7_error(
+                sc,
+                s7_make_symbol(sc, c"encoding-error".as_ptr()),
+                s7_list(sc, 1, s7_make_string(sc, c"Byte vector string is malformed".as_ptr()))
+            )
+        }
     }
 
     Primitive::new(
