@@ -211,7 +211,6 @@ impl Journal {
                     primitive_s7_sync_car(),
                     primitive_s7_sync_cdr(),
                     primitive_s7_sync_cut(),
-                    primitive_s7_sync_equivalent(),
                     primitive_s7_sync_create(),
                     primitive_s7_sync_delete(),
                     primitive_s7_sync_all(),
@@ -902,42 +901,6 @@ fn primitive_s7_sync_cut() -> Primitive {
         c"sync-cut",
         c"(sync-cut value) obtain the stub of a sync pair or byte vector",
         1,
-        0,
-        false,
-    )
-}
-
-fn primitive_s7_sync_equivalent() -> Primitive {
-    unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let first = s7::s7_car(args);
-        let second = s7::s7_cadr(args);
-
-        let wrong_arg = |number| {
-            s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-equivalent".as_ptr(),
-                number,
-                s7::s7_car(args),
-                c"a sync-node".as_ptr(),
-            )
-        };
-
-        match (sync_is_node(first), sync_is_node(second)) {
-            (true, true) => {
-                let first_digest = sync_digest(sc, sync_heap_read(s7::s7_c_object_value(first)));
-                let second_digest = sync_digest(sc, sync_heap_read(s7::s7_c_object_value(second)));
-                s7::s7_make_boolean(sc, first_digest == second_digest)
-            }
-            (false, _) => wrong_arg(1),
-            (_, false) => wrong_arg(2),
-        }
-    }
-
-    Primitive::new(
-        code,
-        c"sync-equivalent?",
-        c"(sync-equivalent? sync-pair-1 sync-pair-2) returns true if both sync pairs have identical digests",
-        2,
         0,
         false,
     )
