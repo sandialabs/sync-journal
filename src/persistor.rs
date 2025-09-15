@@ -609,7 +609,7 @@ impl Persistor for DatabasePersistor {
                     .expect("Invalid right branch size");
                 let digest = &value[SIZE * 2..]
                     .try_into()
-                    .expect("Invalid right branch size");
+                    .expect("Invalid digest branch size");
                 Ok((*left, *right, *digest))
             }
             Ok(None) => Err(PersistorAccessError(format!(
