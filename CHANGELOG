@@ -2,6 +2,12 @@
 The purpose of this changelog is to document new features and breaking changes that are most likely to affect developers
 ------------------------------------------------------------------------------------------------------------------------
 
+--- v1.0.4 (2025.09.14) ---
+
+- Modify core merkle tree structure to support "stumps" and branch digest propogation
+- Implement sync-stub and sync-cut s7 primitives to work with stumps
+- Consolidate sync-pair? and sync-null? into a more general sync-node? type
+
 --- v1.0.3 (2025.08.25) ---
 
 - Add caching mechanism that enforces exactly one unique request per second

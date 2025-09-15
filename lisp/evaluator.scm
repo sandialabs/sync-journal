@@ -4,7 +4,7 @@
        ;; --- verifiable map ---
 
        (define (nth-bit x n)
-	     (zero? (logand (byte-vector-ref (sync-pair->byte-vector x) (floor (/ n 8)))
+	     (zero? (logand (byte-vector-ref (sync-digest x) (floor (/ n 8)))
 			            (ash 1 (modulo n 8)))))
 
        (define (sync-caar x) (sync-car (sync-car x)))
@@ -95,11 +95,11 @@
        (define (meta-find sp)
 	     (let ((a-find (lambda (x) (byte-vector->expression x))))
 	       (let p-find ((sp sp))
-	         (if (sync-pair? (sync-car sp))
+	         (if (sync-node? (sync-car sp))
 		         (cons (p-find (sync-car sp)) (p-find (sync-cdr sp)))
 		         (let ((type (a-find (sync-car sp)))
 		               (value-sp (sync-cdr sp)))
-		           (let ((value (if (sync-pair? value-sp) (p-find value-sp) (a-find value-sp))))
+		           (let ((value (if (sync-node? value-sp) (p-find value-sp) (a-find value-sp))))
 		             (case type
 		               ((procedure?) (eval value))
 		               (else value))))))))

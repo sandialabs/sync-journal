@@ -23,7 +23,7 @@
          (define (sync-caddr x) (sync-car (sync-cdr (sync-cdr x))))
 
          (define (sync-null-pair? x)
-           (and (sync-pair? x) (sync-null? x)))
+           (and (sync-node? x) (sync-null? x)))
 
          (define (sync-leaf? x) (and (not (sync-null-pair? x)) (equal? (sync-car x) (sync-cdr x))))
 
