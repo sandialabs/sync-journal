@@ -295,39 +295,42 @@ impl Journal {
                         .expect("Failed to get record state for comparison")
                 {
                     true => {
-                        fn recurse(
+                        fn iterate(
                             source: &MemoryPersistor,
-                            node: Word,
+                            start_node: Word,
                         ) -> Result<(), PersistorAccessError> {
-                            if node == NULL {
-                                Ok(())
-                            } else if let Ok(_) = PERSISTOR.leaf_get(node) {
-                                Ok(())
-                            } else if let Ok(_) = PERSISTOR.stump_get(node) {
-                                Ok(())
-                            } else if let Ok(_) = PERSISTOR.branch_get(node) {
-                                Ok(())
-                            } else if let Ok(content) = source.leaf_get(node) {
-                                PERSISTOR
-                                    .leaf_set(content)
-                                    .expect("Failed to set leaf content");
-                                Ok(())
-                            } else if let Ok(digest) = source.stump_get(node) {
-                                PERSISTOR
-                                    .stump_set(digest)
-                                    .expect("Failed to set stump");
-                                Ok(())
-                            } else if let Ok((left, right, digest)) = source.branch_get(node) {
-                                PERSISTOR
-                                    .branch_set(left, right, digest)
-                                    .expect("Failed to set branch");
-                                match recurse(&source, left) {
-                                    Ok(_) => recurse(&source, right),
-                                    err => err,
+                            let mut stack = vec![start_node];
+
+                            while let Some(node) = stack.pop() {
+                                if node == NULL {
+                                    continue;
+                                } else if let Ok(_) = PERSISTOR.leaf_get(node) {
+                                    continue;
+                                } else if let Ok(_) = PERSISTOR.stump_get(node) {
+                                    continue;
+                                } else if let Ok(_) = PERSISTOR.branch_get(node) {
+                                    continue;
+                                } else if let Ok(content) = source.leaf_get(node) {
+                                    PERSISTOR
+                                        .leaf_set(content)
+                                        .expect("Failed to set leaf content");
+                                } else if let Ok(digest) = source.stump_get(node) {
+                                    PERSISTOR.stump_set(digest).expect("Failed to set stump");
+                                } else if let Ok((left, right, digest)) = source.branch_get(node) {
+                                    PERSISTOR
+                                        .branch_set(left, right, digest)
+                                        .expect("Failed to set branch");
+                                    stack.push(right);
+                                    stack.push(left);
+                                } else {
+                                    return Err(PersistorAccessError(format!(
+                                        "Dangling branch {:?}",
+                                        node
+                                    )));
                                 }
-                            } else {
-                                Err(PersistorAccessError(format!("Dangling branch {:?}", node)))
                             }
+
+                            Ok(())
                         }
 
                         {
@@ -338,7 +341,7 @@ impl Journal {
                                 }
                             };
 
-                            match recurse(&persistor, state_new) {
+                            match iterate(&persistor, state_new) {
                                 Ok(_) => match PERSISTOR.root_set(record, state_old, state_new) {
                                     Ok(_) => {
                                         debug!(

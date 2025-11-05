@@ -13,6 +13,7 @@ use std::ffi::{CStr, CString};
 use std::fmt::Write;
 use std::num::ParseIntError;
 use std::os::raw::c_char;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 type PrimitiveFunction = unsafe extern "C" fn(*mut s7_scheme, s7_pointer) -> s7_pointer;
 
@@ -98,6 +99,7 @@ impl Evaluator {
             primitive_expression_to_byte_vector(),
             primitive_byte_vector_to_expression(),
             primitive_random_byte_vector(),
+            primitive_time_unix(),
         ];
 
         primitives_.extend(primitives);
@@ -229,8 +231,12 @@ fn primitive_byte_vector_to_expression() -> Primitive {
             Err(_) => s7_error(
                 sc,
                 s7_make_symbol(sc, c"encoding-error".as_ptr()),
-                s7_list(sc, 1, s7_make_string(sc, c"Byte vector string is malformed".as_ptr()))
-            )
+                s7_list(
+                    sc,
+                    1,
+                    s7_make_string(sc, c"Byte vector string is malformed".as_ptr()),
+                ),
+            ),
         }
     }
 
@@ -374,6 +380,32 @@ fn primitive_random_byte_vector() -> Primitive {
         c"random-byte-vector",
         c"(random-byte-vector length) generate a securely random byte vector of the provided length",
         1, 0, false,
+    )
+}
+
+fn primitive_time_unix() -> Primitive {
+    unsafe extern "C" fn code(sc: *mut s7_scheme, _args: s7_pointer) -> s7_pointer {
+        match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => s7_make_real(sc, duration.as_secs_f64()),
+            Err(_) => s7_error(
+                sc,
+                s7_make_symbol(sc, c"time-error".as_ptr()),
+                s7_list(
+                    sc,
+                    1,
+                    s7_make_string(sc, c"Failed to get system time".as_ptr()),
+                ),
+            ),
+        }
+    }
+
+    Primitive::new(
+        code,
+        c"time-unix",
+        c"(time-unix) returns current Unix time in seconds",
+        0,
+        0,
+        false,
     )
 }
 
