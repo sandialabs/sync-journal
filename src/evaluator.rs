@@ -100,6 +100,7 @@ impl Evaluator {
             primitive_byte_vector_to_expression(),
             primitive_random_byte_vector(),
             primitive_time_unix(),
+            primitive_print(),
         ];
 
         primitives_.extend(primitives);
@@ -406,6 +407,45 @@ fn primitive_time_unix() -> Primitive {
         0,
         0,
         false,
+    )
+}
+
+fn primitive_print() -> Primitive {
+    unsafe extern "C" fn code(sc: *mut s7_scheme, args: s7_pointer) -> s7_pointer {
+        let mut result = String::new();
+        let mut current_arg = args;
+
+        while !s7_is_null(sc, current_arg) {
+            let arg = s7_car(current_arg);
+            let str_rep = obj2str(sc, arg);
+
+            if !result.is_empty() {
+                result.push(' ');
+            }
+            result.push_str(&str_rep);
+            current_arg = s7_cdr(current_arg);
+        }
+
+        println!("{}", result);
+
+        if s7_is_null(sc, args) {
+            s7_unspecified(sc)
+        } else {
+            let mut last_arg = args;
+            while !s7_is_null(sc, s7_cdr(last_arg)) {
+                last_arg = s7_cdr(last_arg);
+            }
+            s7_car(last_arg)
+        }
+    }
+
+    Primitive::new(
+        code,
+        c"print",
+        c"(print obj ...) print objects to the console and returns the last object",
+        0,
+        0,
+        true,
     )
 }
 
