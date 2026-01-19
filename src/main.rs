@@ -3,24 +3,14 @@ use log::info;
 use rocket::config::Config as RocketConfig;
 use rocket::data::{Limits, ToByteUnit};
 use rocket::response::content::RawHtml;
-use rocket::serde::{Deserialize, Serialize, json::Json};
+use rocket::serde::{Serialize, json::Json};
+use serde_json::Value;
 use rocket::{get, post, routes};
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MICRO: f64 = 1000000.0;
 
-#[derive(Deserialize)]
-#[serde(crate = "rocket::serde")]
-struct QueryRequest {
-    query: String,
-}
-
-#[derive(Serialize)]
-#[serde(crate = "rocket::serde")]
-struct QueryResponse {
-    result: String,
-}
 
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <html>
@@ -98,9 +88,9 @@ async fn inform_json() -> RawHtml<String> {
 }
 
 #[post("/interface/json", data = "<request>", format = "json", rank = 1)]
-async fn evaluate_json(request: Json<QueryRequest>) -> Json<QueryResponse> {
-    let result = JOURNAL.evaluate_json(&request.query);
-    Json(QueryResponse { result })
+async fn evaluate_json(request: Json<Value>) -> Json<Value> {
+    let result = JOURNAL.evaluate_json(request.into_inner());
+    Json(result)
 }
 
 #[rocket::main]
