@@ -167,6 +167,10 @@ impl Evaluator {
             obj2str(self.sc, s7_obj)
         }
     }
+
+    pub fn evaluate_json(&self, code: &str) -> String {
+        return code
+    }
 }
 
 impl Drop for Evaluator {
