@@ -107,12 +107,12 @@ fn test_scheme_to_json_lists() {
     let json_val = scheme2json("()");
     assert_eq!(json_val, json!(null));
 
-    // Test simple list
-    let json_val = scheme2json("(1 2 3)");
+    // Test simple quoted list
+    let json_val = scheme2json("'(1 2 3)");
     assert_eq!(json_val, json!([1, 2, 3]));
 
-    // Test nested lists
-    let json_val = scheme2json("((1 2) (3 4))");
+    // Test nested quoted lists
+    let json_val = scheme2json("'((1 2) (3 4))");
     assert_eq!(json_val, json!([[1, 2], [3, 4]]));
 }
 
