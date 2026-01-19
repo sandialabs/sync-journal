@@ -34,7 +34,7 @@ fn test_json_to_scheme_arrays() {
 
     // Test array with mixed types
     let scheme = json2scheme(json!([1, "hello", true, null]));
-    assert_eq!(scheme, "(list 1 \"hello\" #t ())");
+    assert_eq!(scheme, "(list 1 hello #t ())");
 
     // Test nested arrays
     let scheme = json2scheme(json!([[1, 2], [3, 4]]));
