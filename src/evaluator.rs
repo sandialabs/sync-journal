@@ -109,8 +109,12 @@ pub fn scheme2json(expression: &str) -> Value {
     // - handle (round-trip) any normal json object
     // - if creating json object with special types, dev's responsibility to make it well-formed
 
+    // TODO: need to propagate errors propertly
+
     unsafe {
         let sc: *mut s7_scheme = s7_init();
+        
+        // For symbols, quote them to prevent evaluation errors
         let quoted_expr = format!("'{}", expression);
         
         // Evaluate the expression to get an s7 object
@@ -118,7 +122,6 @@ pub fn scheme2json(expression: &str) -> Value {
         let s7_obj = s7_eval_c_string(sc, c_expr.as_ptr());
         
         let result = s7_obj_to_json(sc, s7_obj);
-        println!("{:?}", result);
         s7_free(sc);
         result
     }
@@ -130,7 +133,6 @@ pub fn json2scheme(expression: Value) -> String {
         let s7_obj = json_to_s7_obj(sc, &expression);
         let result = obj2str(sc, s7_obj);
         s7_free(sc);
-        println!("{:?}", result);
         result
     }
 }
@@ -556,17 +558,6 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
             }
             Value::Array(array)
         }
-    } else if s7_is_vector(obj) {
-        let mut special_type = Map::new();
-        let mut array = Vec::new();
-        let len = s7_vector_length(obj);
-        
-        for i in 0..len {
-            array.push(s7_obj_to_json(sc, s7_vector_ref(sc, obj, i)));
-        }
-        
-        special_type.insert("*type/vector*".to_string(), Value::Array(array));
-        Value::Object(special_type)
     } else if s7_is_byte_vector(obj) {
         let mut hex_string = String::new();
         let len = s7_vector_length(obj);
@@ -578,6 +569,17 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
         
         let mut special_type = Map::new();
         special_type.insert("*type/byte-vector*".to_string(), Value::String(hex_string));
+        Value::Object(special_type)
+    } else if s7_is_vector(obj) {
+        let mut special_type = Map::new();
+        let mut array = Vec::new();
+        let len = s7_vector_length(obj);
+        
+        for i in 0..len {
+            array.push(s7_obj_to_json(sc, s7_vector_ref(sc, obj, i)));
+        }
+        
+        special_type.insert("*type/vector*".to_string(), Value::Array(array));
         Value::Object(special_type)
     } else {
         // For other types, convert to string representation
@@ -635,13 +637,33 @@ unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> s7_pointer {
                     return vector;
                 }
                 if let Some(Value::String(hex)) = obj.get("*type/byte-vector*") {
-                    // Create (hex-string->byte-vector "deadbeef") expression
-                    let hex_func = s7_make_symbol(sc, c"hex-string->byte-vector".as_ptr());
-                    let hex_str = {
-                        let c_str = CString::new(hex.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
-                        s7_make_string(sc, c_str.as_ptr())
-                    };
-                    return s7_cons(sc, hex_func, s7_cons(sc, hex_str, s7_nil(sc)));
+
+                    let bytes: Result<Vec<u8>, ParseIntError> = (0..hex.len())
+                        .step_by(2)
+                        .map(|i| {
+                            if i + 2 <= hex.len() {
+                                u8::from_str_radix(&hex[i..i+2], 16)
+                            } else if i + 1 <= hex.len() {
+                                // Handle odd-length hex string
+                                u8::from_str_radix(&hex[i..i+1], 16)
+                            } else {
+                                Ok(0)
+                            }
+                        })
+                        .collect();
+
+                    if let Ok(bytes) = bytes {
+                        let len = bytes.len() as i64;
+                        let bv = s7_make_byte_vector(sc, len, 1, std::ptr::null_mut());
+                        
+                        for (i, &byte) in bytes.iter().enumerate() {
+                            s7_byte_vector_set(bv, i as i64, byte);
+                        }
+                        
+                        return bv;
+                    }
+    
+                    return s7_make_byte_vector(sc, 0, 0, std::ptr::null_mut());
                 }
             }
             

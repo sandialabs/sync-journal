@@ -60,9 +60,7 @@ fn test_json_to_scheme_objects() {
 fn test_json_to_scheme_special_types() {
     // Test byte-vector special type
     let scheme = json2scheme(json!({"*type/byte-vector*": "deadbeef"}));
-    // Should convert to a byte vector creation expression
-    assert!(scheme.contains("hex-string->byte-vector"));
-    assert!(scheme.contains("deadbeef"));
+    assert!(scheme.contains("#u(222 173 190 239)"));
 
     // Test vector special type
     let scheme = json2scheme(json!({"*type/vector*": [1, 2, 3]}));

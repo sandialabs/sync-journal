@@ -43,6 +43,9 @@ const INTERFACE_HTML: &str = r#"<!DOCTYPE html>
   let query = document.getElementById('query').value;
   fetch('', {
       method: 'POST',
+      headers: {
+          'Content-Type': 'application/json',
+      },
       body: query,
   }).then(response => {
       return response.text();
@@ -86,9 +89,9 @@ async fn inform_json() -> RawHtml<String> {
     RawHtml(INTERFACE_HTML.replace("{}", "JSON Interface"))
 }
 
-#[post("/interface/json", data = "<request>", format = "json", rank = 1)]
-async fn evaluate_json(request: Json<Value>) -> Json<Value> {
-    let result = JOURNAL.evaluate_json(request.into_inner());
+#[post("/interface/json", data = "<query>", format = "json", rank = 1)]
+async fn evaluate_json(query: Json<Value>) -> Json<Value> {
+    let result = JOURNAL.evaluate_json(query.into_inner());
     Json(result)
 }
 
