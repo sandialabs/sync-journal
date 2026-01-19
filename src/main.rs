@@ -1,5 +1,4 @@
 use journal_sdk::{Config, JOURNAL};
-f
 use log::info;
 use rocket::config::Config as RocketConfig;
 use rocket::data::{Limits, ToByteUnit};
