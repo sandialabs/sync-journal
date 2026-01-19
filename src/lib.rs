@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use std::ffi::{CStr, CString};
 
 mod config;
-mod evaluator;
+pub mod evaluator;
 mod persistor;
 mod extensions {
     pub mod crypto;

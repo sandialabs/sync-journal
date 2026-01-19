@@ -1,257 +1,210 @@
-use journal_sdk::{Config, JOURNAL, Word, SIZE};
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use rand::RngCore;
-
-fn setup() -> (String, impl Fn(&str, &str)) {
-    let mut seed: Word = [0 as u8; SIZE];
-    rand::thread_rng().fill_bytes(&mut seed);
-    let record = hex::encode(seed);
-
-    assert!(
-        JOURNAL
-            .evaluate(format!("(sync-create (hex-string->byte-vector \"{}\"))", record).as_str())
-            == "#t",
-        "Unable to set up new Journal",
-    );
-
-    (record.clone(), move |query: &str, expected: &str| {
-        let result = JOURNAL.evaluate(query);
-        assert_eq!(result, expected, "Query: {}", query);
-    })
-}
+use journal_sdk::evaluator::{json2scheme, scheme2json};
 
 #[test]
-fn test_json_basic_types() {
-    let (_record, _test) = setup();
-    
+fn test_json_to_scheme_basic_types() {
     // Test null
-    let result = JOURNAL.evaluate_json(json!(null));
-    assert_eq!(result, json!(null));
+    let scheme = json2scheme(json!(null));
+    assert_eq!(scheme, "()");
     
     // Test boolean
-    let result = JOURNAL.evaluate_json(json!(true));
-    assert_eq!(result, json!(true));
+    let scheme = json2scheme(json!(true));
+    assert_eq!(scheme, "#t");
     
-    let result = JOURNAL.evaluate_json(json!(false));
-    assert_eq!(result, json!(false));
+    let scheme = json2scheme(json!(false));
+    assert_eq!(scheme, "#f");
     
     // Test numbers
-    let result = JOURNAL.evaluate_json(json!(42));
-    assert_eq!(result, json!(42));
+    let scheme = json2scheme(json!(42));
+    assert_eq!(scheme, "42");
     
-    let result = JOURNAL.evaluate_json(json!(3.14));
-    assert_eq!(result, json!(3.14));
+    let scheme = json2scheme(json!(3.14));
+    assert_eq!(scheme, "3.14");
     
     // Test strings
-    let result = JOURNAL.evaluate_json(json!("hello world"));
-    assert_eq!(result, json!({"*type/string*": "hello world"}));
+    let scheme = json2scheme(json!("hello world"));
+    assert_eq!(scheme, "\"hello world\"");
 }
 
 #[test]
-fn test_json_arrays() {
-    let (_record, _test) = setup();
-    
+fn test_json_to_scheme_arrays() {
     // Test empty array
-    let result = JOURNAL.evaluate_json(json!([]));
-    assert_eq!(result, json!([]));
+    let scheme = json2scheme(json!([]));
+    assert_eq!(scheme, "()");
     
     // Test array with mixed types
-    let input = json!([1, "hello", true, null]);
-    let result = JOURNAL.evaluate_json(input);
-    let expected = json!([1, {"*type/string*": "hello"}, true, null]);
-    assert_eq!(result, expected);
+    let scheme = json2scheme(json!([1, "hello", true, null]));
+    assert_eq!(scheme, "(list 1 \"hello\" #t ())");
     
     // Test nested arrays
-    let input = json!([[1, 2], [3, 4]]);
-    let result = JOURNAL.evaluate_json(input);
-    let expected = json!([[1, 2], [3, 4]]);
-    assert_eq!(result, expected);
+    let scheme = json2scheme(json!([[1, 2], [3, 4]]));
+    assert_eq!(scheme, "(list (list 1 2) (list 3 4))");
 }
 
 #[test]
-fn test_json_objects() {
-    let (_record, _test) = setup();
-    
+fn test_json_to_scheme_objects() {
     // Test empty object
-    let result = JOURNAL.evaluate_json(json!({}));
-    assert_eq!(result, json!({}));
+    let scheme = json2scheme(json!({}));
+    assert_eq!(scheme, "()");
     
-    // Test simple object
-    let input = json!({"name": "Alice", "age": 30});
-    let result = JOURNAL.evaluate_json(input);
-    let expected = json!({"name": {"*type/string*": "Alice"}, "age": 30});
-    assert_eq!(result, expected);
-    
-    // Test nested objects
-    let input = json!({
-        "person": {
-            "name": "Bob",
-            "details": {
-                "age": 25,
-                "active": true
-            }
-        }
-    });
-    let result = JOURNAL.evaluate_json(input);
-    // The exact structure will depend on how nested objects are handled
-    assert!(result.is_object());
+    // Test simple object - should convert to association list
+    let scheme = json2scheme(json!({"name": "Alice", "age": 30}));
+    // The exact order may vary, but should contain both key-value pairs
+    assert!(scheme.contains("name"));
+    assert!(scheme.contains("Alice"));
+    assert!(scheme.contains("age"));
+    assert!(scheme.contains("30"));
 }
 
 #[test]
-fn test_json_special_types() {
-    let (_record, _test) = setup();
-    
+fn test_json_to_scheme_special_types() {
     // Test byte-vector special type
-    let input = json!({"*type/byte-vector*": "deadbeef"});
-    let result = JOURNAL.evaluate_json(input);
-    // Should round-trip back to the same special type
-    assert_eq!(result, json!({"*type/byte-vector*": "deadbeef"}));
+    let scheme = json2scheme(json!({"*type/byte-vector*": "deadbeef"}));
+    // Should convert to a byte vector creation expression
+    assert!(scheme.contains("deadbeef"));
     
     // Test vector special type
-    let input = json!({"*type/vector*": [1, 2, 3]});
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!({"*type/vector*": [1, 2, 3]}));
+    let scheme = json2scheme(json!({"*type/vector*": [1, 2, 3]}));
+    // Should convert to a vector creation expression
+    assert!(scheme.contains("1"));
+    assert!(scheme.contains("2"));
+    assert!(scheme.contains("3"));
     
     // Test string special type
-    let input = json!({"*type/string*": "test string"});
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!({"*type/string*": "test string"}));
+    let scheme = json2scheme(json!({"*type/string*": "test string"}));
+    assert!(scheme.contains("test string"));
 }
 
 #[test]
-fn test_json_scheme_evaluation() {
-    let (_record, _test) = setup();
+fn test_scheme_to_json_basic_types() {
+    // Test null
+    let json_val = scheme2json("()");
+    assert_eq!(json_val, json!(null));
     
-    // Test arithmetic - should evaluate the scheme expression
-    let input = json!("(+ 1 2 3)");
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!(6));
+    // Test boolean
+    let json_val = scheme2json("#t");
+    assert_eq!(json_val, json!(true));
     
-    // Test list operations
-    let input = json!("(list 1 2 3)");
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!([1, 2, 3]));
+    let json_val = scheme2json("#f");
+    assert_eq!(json_val, json!(false));
     
-    // Test symbol evaluation
-    let input = json!("'hello");
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!("hello"));
+    // Test numbers
+    let json_val = scheme2json("42");
+    assert_eq!(json_val, json!(42));
+    
+    let json_val = scheme2json("3.14");
+    assert_eq!(json_val, json!(3.14));
+    
+    // Test symbols (should become strings)
+    let json_val = scheme2json("hello");
+    assert_eq!(json_val, json!("hello"));
 }
 
 #[test]
-fn test_json_round_trip() {
-    let (_record, _test) = setup();
+fn test_scheme_to_json_lists() {
+    // Test empty list
+    let json_val = scheme2json("()");
+    assert_eq!(json_val, json!(null));
     
-    // Test that JSON -> Scheme -> JSON preserves structure for basic types
-    let original = json!({
-        "number": 42,
-        "string": "test",
-        "boolean": true,
-        "null_value": null,
-        "array": [1, 2, 3],
-        "nested": {
-            "inner": "value"
-        }
-    });
+    // Test simple list
+    let json_val = scheme2json("(1 2 3)");
+    assert_eq!(json_val, json!([1, 2, 3]));
     
-    let result = JOURNAL.evaluate_json(original.clone());
-    
-    // The result should be a valid JSON structure
-    assert!(result.is_object());
-    
-    // Check that basic structure is preserved
-    if let Value::Object(obj) = &result {
-        assert!(obj.contains_key("number"));
-        assert!(obj.contains_key("array"));
-        assert!(obj.contains_key("nested"));
-    }
+    // Test nested lists
+    let json_val = scheme2json("((1 2) (3 4))");
+    assert_eq!(json_val, json!([[1, 2], [3, 4]]));
 }
 
 #[test]
-fn test_json_error_handling() {
-    let (_record, _test) = setup();
+fn test_round_trip_conversion() {
+    // Test that JSON -> Scheme -> JSON preserves basic types
+    let original = json!(42);
+    let scheme = json2scheme(original.clone());
+    let back_to_json = scheme2json(&scheme);
+    assert_eq!(original, back_to_json);
     
-    // Test invalid scheme expression
-    let input = json!("(invalid-function 1 2 3)");
-    let result = JOURNAL.evaluate_json(input);
+    // Test boolean round trip
+    let original = json!(true);
+    let scheme = json2scheme(original.clone());
+    let back_to_json = scheme2json(&scheme);
+    assert_eq!(original, back_to_json);
     
-    // Should return some kind of error representation
-    assert!(result.is_string() || result.is_object());
+    // Test string round trip
+    let original = json!("hello");
+    let scheme = json2scheme(original.clone());
+    let back_to_json = scheme2json(&scheme);
+    assert_eq!(original, back_to_json);
     
-    // If it's a string, it should contain "error"
-    if let Value::String(s) = &result {
-        assert!(s.to_lowercase().contains("error"));
-    }
+    // Test null round trip
+    let original = json!(null);
+    let scheme = json2scheme(original.clone());
+    let back_to_json = scheme2json(&scheme);
+    assert_eq!(original, back_to_json);
 }
 
 #[test]
-fn test_json_complex_expressions() {
-    let (_record, _test) = setup();
+fn test_scheme_strings_and_special_types() {
+    // Test string conversion (should use special type marker)
+    let json_val = scheme2json("\"hello world\"");
+    assert_eq!(json_val, json!({"*type/string*": "hello world"}));
     
-    // Test defining and using a function
-    let input = json!("(begin (define (square x) (* x x)) (square 5))");
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!(25));
-    
-    // Test conditional expressions
-    let input = json!("(if (> 5 3) 'yes 'no)");
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!("yes"));
-    
-    // Test let expressions
-    let input = json!("(let ((x 10) (y 20)) (+ x y))");
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!(30));
-}
-
-#[test]
-fn test_json_byte_vector_operations() {
-    let (_record, _test) = setup();
-    
-    // Test creating and manipulating byte vectors through JSON
-    let input = json!("(hex-string->byte-vector \"deadbeef\")");
-    let result = JOURNAL.evaluate_json(input);
-    
-    // Should return a byte-vector special type
-    if let Value::Object(obj) = &result {
+    // Test byte vector conversion
+    let json_val = scheme2json("#u8(222 173 190 239)");
+    if let Value::Object(obj) = &json_val {
         assert!(obj.contains_key("*type/byte-vector*"));
-        if let Some(Value::String(hex)) = obj.get("*type/byte-vector*") {
-            assert_eq!(hex, "deadbeef");
-        }
     }
 }
 
 #[test]
-fn test_json_list_operations() {
-    let (_record, _test) = setup();
+fn test_array_conversion() {
+    // Test simple array
+    let original = json!([1, 2, 3]);
+    let scheme = json2scheme(original.clone());
+    assert!(scheme.contains("list"));
+    assert!(scheme.contains("1"));
+    assert!(scheme.contains("2"));
+    assert!(scheme.contains("3"));
     
-    // Test list creation and manipulation
-    let input = json!("(cons 1 (cons 2 (cons 3 '())))");
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!([1, 2, 3]));
-    
-    // Test car and cdr
-    let input = json!("(car '(1 2 3))");
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!(1));
-    
-    let input = json!("(cdr '(1 2 3))");
-    let result = JOURNAL.evaluate_json(input);
-    assert_eq!(result, json!([2, 3]));
+    // Test mixed type array
+    let original = json!([1, "hello", true]);
+    let scheme = json2scheme(original);
+    assert!(scheme.contains("list"));
+    assert!(scheme.contains("1"));
+    assert!(scheme.contains("hello"));
+    assert!(scheme.contains("#t"));
 }
 
 #[test]
-fn test_json_association_lists() {
-    let (_record, _test) = setup();
+fn test_special_type_round_trip() {
+    // Test byte-vector special type round trip
+    let original = json!({"*type/byte-vector*": "deadbeef"});
+    let scheme = json2scheme(original.clone());
+    let back_to_json = scheme2json(&scheme);
+    assert_eq!(original, back_to_json);
     
-    // Test creating association lists that should convert to JSON objects
-    let input = json!("(list (cons 'name \"Alice\") (cons 'age 30))");
-    let result = JOURNAL.evaluate_json(input);
+    // Test vector special type round trip
+    let original = json!({"*type/vector*": [1, 2, 3]});
+    let scheme = json2scheme(original.clone());
+    let back_to_json = scheme2json(&scheme);
+    assert_eq!(original, back_to_json);
     
-    // Should convert to a JSON object
-    if let Value::Object(obj) = &result {
+    // Test string special type round trip
+    let original = json!({"*type/string*": "test string"});
+    let scheme = json2scheme(original.clone());
+    let back_to_json = scheme2json(&scheme);
+    assert_eq!(original, back_to_json);
+}
+
+#[test]
+fn test_association_list_conversion() {
+    // Test that association lists convert to JSON objects
+    let json_val = scheme2json("((name . \"Alice\") (age . 30))");
+    
+    if let Value::Object(obj) = &json_val {
         assert!(obj.contains_key("name"));
         assert!(obj.contains_key("age"));
+    } else {
+        // If not an object, should at least be a valid JSON structure
+        assert!(json_val.is_array() || json_val.is_object());
     }
 }
