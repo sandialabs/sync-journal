@@ -34,11 +34,11 @@ fn test_json_to_scheme_arrays() {
 
     // Test array with mixed types
     let scheme = json2scheme(json!([1, "hello", true, null]));
-    assert_eq!(scheme, "(list 1 hello #t ())");
+    assert_eq!(scheme, "(1 hello #t ())");
 
     // Test nested arrays
     let scheme = json2scheme(json!([[1, 2], [3, 4]]));
-    assert_eq!(scheme, "(list (list 1 2) (list 3 4))");
+    assert_eq!(scheme, "((1 2) (3 4))");
 }
 
 #[test]
@@ -108,11 +108,11 @@ fn test_scheme_to_json_lists() {
     assert_eq!(json_val, json!(null));
 
     // Test simple quoted list
-    let json_val = scheme2json("'(1 2 3)");
+    let json_val = scheme2json("(1 2 3)");
     assert_eq!(json_val, json!([1, 2, 3]));
 
     // Test nested quoted lists
-    let json_val = scheme2json("'((1 2) (3 4))");
+    let json_val = scheme2json("((1 2) (3 4))");
     assert_eq!(json_val, json!([[1, 2], [3, 4]]));
 }
 
@@ -161,7 +161,6 @@ fn test_array_conversion() {
     // Test simple array
     let original = json!([1, 2, 3]);
     let scheme = json2scheme(original.clone());
-    assert!(scheme.contains("list"));
     assert!(scheme.contains("1"));
     assert!(scheme.contains("2"));
     assert!(scheme.contains("3"));
@@ -169,7 +168,6 @@ fn test_array_conversion() {
     // Test mixed type array
     let original = json!([1, "hello", true]);
     let scheme = json2scheme(original);
-    assert!(scheme.contains("list"));
     assert!(scheme.contains("1"));
     assert!(scheme.contains("hello"));
     assert!(scheme.contains("#t"));

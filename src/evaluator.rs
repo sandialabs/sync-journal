@@ -111,21 +111,14 @@ pub fn scheme2json(expression: &str) -> Value {
 
     unsafe {
         let sc: *mut s7_scheme = s7_init();
-        
-        // For symbols, quote them to prevent evaluation errors
-        let quoted_expr = if expression.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') 
-            && !expression.chars().next().unwrap_or('0').is_numeric() 
-            && expression != "#t" && expression != "#f" && expression != "()" {
-            format!("'{}", expression)
-        } else {
-            expression.to_string()
-        };
+        let quoted_expr = format!("'{}", expression);
         
         // Evaluate the expression to get an s7 object
         let c_expr = CString::new(quoted_expr).unwrap_or_else(|_| CString::new("()").unwrap());
         let s7_obj = s7_eval_c_string(sc, c_expr.as_ptr());
         
         let result = s7_obj_to_json(sc, s7_obj);
+        println!("{:?}", result);
         s7_free(sc);
         result
     }
@@ -137,6 +130,7 @@ pub fn json2scheme(expression: Value) -> String {
         let s7_obj = json_to_s7_obj(sc, &expression);
         let result = obj2str(sc, s7_obj);
         s7_free(sc);
+        println!("{:?}", result);
         result
     }
 }
@@ -614,7 +608,6 @@ unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> s7_pointer {
                 s7_nil(sc)
             } else {
                 // Create (list ...) expression
-                let list_symbol = s7_make_symbol(sc, c"list".as_ptr());
                 let mut result = s7_nil(sc);
                 
                 // Build arguments in reverse order
@@ -622,9 +615,7 @@ unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> s7_pointer {
                     let s7_item = json_to_s7_obj(sc, item);
                     result = s7_cons(sc, s7_item, result);
                 }
-                
-                // Prepend 'list' symbol
-                s7_cons(sc, list_symbol, result)
+                result
             }
         }
         Value::Object(obj) => {
