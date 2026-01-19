@@ -607,7 +607,7 @@ unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> s7_pointer {
         }
         Value::String(s) => {
             let c_str = CString::new(s.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
-            s7_make_string(sc, c_str.as_ptr())
+            s7_make_symbol(sc, c_str.as_ptr())
         }
         Value::Array(arr) => {
             if arr.is_empty() {

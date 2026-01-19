@@ -21,9 +21,9 @@ fn test_json_to_scheme_basic_types() {
     let scheme = json2scheme(json!(3.14));
     assert_eq!(scheme, "3.14");
 
-    // Test strings
-    let scheme = json2scheme(json!("hello world"));
-    assert_eq!(scheme, "\"hello world\"");
+    // Test strings (should become symbols)
+    let scheme = json2scheme(json!("hello"));
+    assert_eq!(scheme, "hello");
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn test_round_trip_conversion() {
     let back_to_json = scheme2json(&scheme);
     assert_eq!(original, back_to_json);
 
-    // Test string round trip
+    // Test string round trip (JSON string -> symbol -> JSON string)
     let original = json!("hello");
     let scheme = json2scheme(original.clone());
     let back_to_json = scheme2json(&scheme);
