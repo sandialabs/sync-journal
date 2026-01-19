@@ -8,6 +8,7 @@ use libc::free;
 use log::info;
 use rand::rngs::OsRng;
 use rand::RngCore;
+use serde_json::{Value, Map};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fmt::Write;
@@ -84,6 +85,45 @@ pub fn obj2str(sc: *mut s7_scheme, obj: *mut s7_cell) -> String {
         free(expr as *mut libc::c_void);
         result
     }
+}
+
+pub fn scheme2json(expression: &str) -> Value {
+    // <TYPE>: <JSON>
+    // ------------------------------------------------------
+    // symbol: "string"
+    // number: 5.5
+    // boolean: true/false
+    // list: []
+    // symbol assoc lists: { }
+    // special types
+    // - @string: { "*type/string*": "this is my string" }
+    // - @rational: { "*type/rational*": "5/5" }
+    // - @complex: { "*type/complex*": "5/5" }
+    // - @vector: {"*type/vector*: ["blah", "blah"]}
+    // - @byte-vector: {"*type/byte-vector*: "deadbeef0000" }
+    // - @float-vector: {"*type/float-vector*": [3.2, 8.6, 0.1]}
+    // - @hash-table: {"*type/hash-table*": [["a", 6], [53, 199]]}
+
+    // guarantees
+    // - handle (round-trip) any lisp object that doesn't involve nodes or procedures
+    // - handle (round-trip) any normal json object
+    // - if creating json object with special types, dev's responsibility to make it well-formed
+
+    // unsafe {
+    //     let sc: *mut s7_scheme = s7_init();
+    //     // quote expression then evaluate
+    //     // then do the conversion
+    // }
+
+    Value::Object(Map::new())
+}
+
+pub fn json2scheme(expression: Value) -> String {
+    // unsafe {
+    //     let sc: *mut s7_scheme = s7_init();
+    //     // create the list
+    // }
+    String::from("")
 }
 
 pub struct Evaluator {
@@ -166,10 +206,6 @@ impl Evaluator {
             let s7_obj = s7_eval_c_string(self.sc, wrapped.as_ptr());
             obj2str(self.sc, s7_obj)
         }
-    }
-
-    pub fn evaluate_json(&self, code: &str) -> String {
-        return code
     }
 }
 

@@ -1,7 +1,7 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
 pub use crate::config::Config;
-use crate::evaluator::{obj2str, Evaluator, Primitive, Type};
+use crate::evaluator::{json2scheme, obj2str, scheme2json, Evaluator, Primitive, Type};
 use crate::extensions::crypto::{
     primitive_s7_crypto_generate, primitive_s7_crypto_sign, primitive_s7_crypto_verify,
 };
@@ -10,6 +10,7 @@ pub use crate::persistor::{Word, SIZE};
 use libc;
 use log::{debug, info};
 use once_cell::sync::Lazy;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -135,6 +136,10 @@ impl Journal {
     /// assert!(output == "3");
     pub fn evaluate(&self, query: &str) -> String {
         self.evaluate_record(NULL, query)
+    }
+
+    pub fn evaluate_json(&self, query: Value) -> Value {
+        scheme2json(self.evaluate_record(NULL, json2scheme(query).as_str()).as_str())
     }
 
     fn evaluate_record(&self, record: Word, query: &str) -> String {
