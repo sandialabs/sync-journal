@@ -112,8 +112,17 @@ pub fn scheme2json(expression: &str) -> Value {
     unsafe {
         let sc: *mut s7_scheme = s7_init();
         
+        // For symbols, quote them to prevent evaluation errors
+        let quoted_expr = if expression.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') 
+            && !expression.chars().next().unwrap_or('0').is_numeric() 
+            && expression != "#t" && expression != "#f" && expression != "()" {
+            format!("'{}", expression)
+        } else {
+            expression.to_string()
+        };
+        
         // Evaluate the expression to get an s7 object
-        let c_expr = CString::new(expression).unwrap_or_else(|_| CString::new("()").unwrap());
+        let c_expr = CString::new(quoted_expr).unwrap_or_else(|_| CString::new("()").unwrap());
         let s7_obj = s7_eval_c_string(sc, c_expr.as_ptr());
         
         let result = s7_obj_to_json(sc, s7_obj);
@@ -601,14 +610,22 @@ unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> s7_pointer {
             s7_make_string(sc, c_str.as_ptr())
         }
         Value::Array(arr) => {
-            let mut result = s7_nil(sc);
-            
-            // Build list in reverse order
-            for item in arr.iter().rev() {
-                let s7_item = json_to_s7_obj(sc, item);
-                result = s7_cons(sc, s7_item, result);
+            if arr.is_empty() {
+                s7_nil(sc)
+            } else {
+                // Create (list ...) expression
+                let list_symbol = s7_make_symbol(sc, c"list".as_ptr());
+                let mut result = s7_nil(sc);
+                
+                // Build arguments in reverse order
+                for item in arr.iter().rev() {
+                    let s7_item = json_to_s7_obj(sc, item);
+                    result = s7_cons(sc, s7_item, result);
+                }
+                
+                // Prepend 'list' symbol
+                s7_cons(sc, list_symbol, result)
             }
-            result
         }
         Value::Object(obj) => {
             // Check for special type markers
@@ -627,34 +644,33 @@ unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> s7_pointer {
                     return vector;
                 }
                 if let Some(Value::String(hex)) = obj.get("*type/byte-vector*") {
-                    let bytes: Result<Vec<u8>, _> = (0..hex.len())
-                        .step_by(2)
-                        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
-                        .collect();
-                    
-                    if let Ok(bytes) = bytes {
-                        let bv = s7_make_byte_vector(sc, bytes.len() as i64, 1, std::ptr::null_mut());
-                        for (i, &byte) in bytes.iter().enumerate() {
-                            s7_byte_vector_set(bv, i as i64, byte);
-                        }
-                        return bv;
-                    }
+                    // Create (hex-string->byte-vector "deadbeef") expression
+                    let hex_func = s7_make_symbol(sc, c"hex-string->byte-vector".as_ptr());
+                    let hex_str = {
+                        let c_str = CString::new(hex.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
+                        s7_make_string(sc, c_str.as_ptr())
+                    };
+                    return s7_cons(sc, hex_func, s7_cons(sc, hex_str, s7_nil(sc)));
                 }
             }
             
-            // Regular object - convert to association list
-            let mut result = s7_nil(sc);
-            
-            for (key, value) in obj.iter().rev() {
-                let key_symbol = {
-                    let c_key = CString::new(key.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
-                    s7_make_symbol(sc, c_key.as_ptr())
-                };
-                let value_obj = json_to_s7_obj(sc, value);
-                let pair = s7_cons(sc, key_symbol, value_obj);
-                result = s7_cons(sc, pair, result);
+            if obj.is_empty() {
+                s7_nil(sc)
+            } else {
+                // Regular object - convert to association list
+                let mut result = s7_nil(sc);
+                
+                for (key, value) in obj.iter().rev() {
+                    let key_symbol = {
+                        let c_key = CString::new(key.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
+                        s7_make_symbol(sc, c_key.as_ptr())
+                    };
+                    let value_obj = json_to_s7_obj(sc, value);
+                    let pair = s7_cons(sc, key_symbol, value_obj);
+                    result = s7_cons(sc, pair, result);
+                }
+                result
             }
-            result
         }
     }
 }
