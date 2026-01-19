@@ -109,21 +109,27 @@ pub fn scheme2json(expression: &str) -> Value {
     // - handle (round-trip) any normal json object
     // - if creating json object with special types, dev's responsibility to make it well-formed
 
-    // unsafe {
-    //     let sc: *mut s7_scheme = s7_init();
-    //     // quote expression then evaluate
-    //     // then do the conversion
-    // }
-
-    Value::Object(Map::new())
+    unsafe {
+        let sc: *mut s7_scheme = s7_init();
+        
+        // Evaluate the expression to get an s7 object
+        let c_expr = CString::new(expression).unwrap_or_else(|_| CString::new("()").unwrap());
+        let s7_obj = s7_eval_c_string(sc, c_expr.as_ptr());
+        
+        let result = s7_obj_to_json(sc, s7_obj);
+        s7_free(sc);
+        result
+    }
 }
 
 pub fn json2scheme(expression: Value) -> String {
-    // unsafe {
-    //     let sc: *mut s7_scheme = s7_init();
-    //     // create the list
-    // }
-    String::from("")
+    unsafe {
+        let sc: *mut s7_scheme = s7_init();
+        let s7_obj = json_to_s7_obj(sc, &expression);
+        let result = obj2str(sc, s7_obj);
+        s7_free(sc);
+        result
+    }
 }
 
 pub struct Evaluator {
@@ -487,6 +493,196 @@ fn primitive_print() -> Primitive {
         0,
         true,
     )
+}
+
+unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
+    if s7_is_null(sc, obj) {
+        Value::Null
+    } else if s7_is_boolean(obj) {
+        Value::Bool(s7_boolean(sc, obj))
+    } else if s7_is_integer(obj) {
+        Value::Number(serde_json::Number::from(s7_integer(obj)))
+    } else if s7_is_real(obj) {
+        if let Some(num) = serde_json::Number::from_f64(s7_real(obj)) {
+            Value::Number(num)
+        } else {
+            Value::Null
+        }
+    } else if s7_is_string(obj) {
+        let c_str = s7_string(obj);
+        let rust_str = CStr::from_ptr(c_str).to_string_lossy();
+        
+        // Check if it's a special type marker
+        let mut special_type = Map::new();
+        special_type.insert("*type/string*".to_string(), Value::String(rust_str.to_string()));
+        Value::Object(special_type)
+    } else if s7_is_symbol(obj) {
+        let c_str = s7_symbol_name(obj);
+        let rust_str = CStr::from_ptr(c_str).to_string_lossy();
+        Value::String(rust_str.to_string())
+    } else if s7_is_pair(obj) {
+        // Check if it's an association list (for JSON objects)
+        if is_assoc_list(sc, obj) {
+            let mut map = Map::new();
+            let mut current = obj;
+            
+            while !s7_is_null(sc, current) {
+                let pair = s7_car(current);
+                if s7_is_pair(pair) {
+                    let key_obj = s7_car(pair);
+                    let value_obj = s7_cdr(pair);
+                    
+                    if s7_is_symbol(key_obj) {
+                        let key_c_str = s7_symbol_name(key_obj);
+                        let key = CStr::from_ptr(key_c_str).to_string_lossy().to_string();
+                        let value = s7_obj_to_json(sc, value_obj);
+                        map.insert(key, value);
+                    }
+                }
+                current = s7_cdr(current);
+            }
+            Value::Object(map)
+        } else {
+            // Regular list - convert to JSON array
+            let mut array = Vec::new();
+            let mut current = obj;
+            
+            while !s7_is_null(sc, current) {
+                array.push(s7_obj_to_json(sc, s7_car(current)));
+                current = s7_cdr(current);
+            }
+            Value::Array(array)
+        }
+    } else if s7_is_vector(obj) {
+        let mut special_type = Map::new();
+        let mut array = Vec::new();
+        let len = s7_vector_length(obj);
+        
+        for i in 0..len {
+            array.push(s7_obj_to_json(sc, s7_vector_ref(sc, obj, i)));
+        }
+        
+        special_type.insert("*type/vector*".to_string(), Value::Array(array));
+        Value::Object(special_type)
+    } else if s7_is_byte_vector(obj) {
+        let mut hex_string = String::new();
+        let len = s7_vector_length(obj);
+        
+        for i in 0..len {
+            let byte = s7_byte_vector_ref(obj, i);
+            write!(&mut hex_string, "{:02x}", byte).unwrap();
+        }
+        
+        let mut special_type = Map::new();
+        special_type.insert("*type/byte-vector*".to_string(), Value::String(hex_string));
+        Value::Object(special_type)
+    } else {
+        // For other types, convert to string representation
+        let str_rep = obj2str(sc, obj);
+        Value::String(str_rep)
+    }
+}
+
+unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> s7_pointer {
+    match json {
+        Value::Null => s7_nil(sc),
+        Value::Bool(b) => s7_make_boolean(sc, *b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                s7_make_integer(sc, i)
+            } else if let Some(f) = n.as_f64() {
+                s7_make_real(sc, f)
+            } else {
+                s7_nil(sc)
+            }
+        }
+        Value::String(s) => {
+            let c_str = CString::new(s.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
+            s7_make_string(sc, c_str.as_ptr())
+        }
+        Value::Array(arr) => {
+            let mut result = s7_nil(sc);
+            
+            // Build list in reverse order
+            for item in arr.iter().rev() {
+                let s7_item = json_to_s7_obj(sc, item);
+                result = s7_cons(sc, s7_item, result);
+            }
+            result
+        }
+        Value::Object(obj) => {
+            // Check for special type markers
+            if obj.len() == 1 {
+                if let Some(Value::String(s)) = obj.get("*type/string*") {
+                    let c_str = CString::new(s.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
+                    return s7_make_string(sc, c_str.as_ptr());
+                }
+                if let Some(Value::Array(arr)) = obj.get("*type/vector*") {
+                    let len = arr.len() as i64;
+                    let vector = s7_make_vector(sc, len);
+                    for (i, item) in arr.iter().enumerate() {
+                        let s7_item = json_to_s7_obj(sc, item);
+                        s7_vector_set(sc, vector, i as i64, s7_item);
+                    }
+                    return vector;
+                }
+                if let Some(Value::String(hex)) = obj.get("*type/byte-vector*") {
+                    let bytes: Result<Vec<u8>, _> = (0..hex.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+                        .collect();
+                    
+                    if let Ok(bytes) = bytes {
+                        let bv = s7_make_byte_vector(sc, bytes.len() as i64, 1, std::ptr::null_mut());
+                        for (i, &byte) in bytes.iter().enumerate() {
+                            s7_byte_vector_set(bv, i as i64, byte);
+                        }
+                        return bv;
+                    }
+                }
+            }
+            
+            // Regular object - convert to association list
+            let mut result = s7_nil(sc);
+            
+            for (key, value) in obj.iter().rev() {
+                let key_symbol = {
+                    let c_key = CString::new(key.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
+                    s7_make_symbol(sc, c_key.as_ptr())
+                };
+                let value_obj = json_to_s7_obj(sc, value);
+                let pair = s7_cons(sc, key_symbol, value_obj);
+                result = s7_cons(sc, pair, result);
+            }
+            result
+        }
+    }
+}
+
+unsafe fn is_assoc_list(sc: *mut s7_scheme, obj: s7_pointer) -> bool {
+    if s7_is_null(sc, obj) {
+        return true;
+    }
+    
+    let mut current = obj;
+    while !s7_is_null(sc, current) {
+        if !s7_is_pair(current) {
+            return false;
+        }
+        
+        let car = s7_car(current);
+        if !s7_is_pair(car) {
+            return false;
+        }
+        
+        let key = s7_car(car);
+        if !s7_is_symbol(key) {
+            return false;
+        }
+        
+        current = s7_cdr(current);
+    }
+    true
 }
 
 static REMOVE: [&'static CStr; 84] = [
