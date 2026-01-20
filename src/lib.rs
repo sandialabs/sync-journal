@@ -139,7 +139,21 @@ impl Journal {
     }
 
     pub fn evaluate_json(&self, query: Value) -> Value {
-        scheme2json(self.evaluate_record(NULL, json2scheme(query).as_str()).as_str())
+        match json2scheme(query) {
+            Ok(scheme_query) => {
+                let result = self.evaluate_record(NULL, scheme_query.as_str());
+                scheme2json(result.as_str())
+            }
+            Err(_) => {
+                // Return JSON equivalent of "(error 'syntax-error "Error parsing JSON input query")"
+                serde_json::json!({
+                    "error": {
+                        "type": "syntax-error",
+                        "message": "Error parsing JSON input query"
+                    }
+                })
+            }
+        }
     }
 
     fn evaluate_record(&self, record: Word, query: &str) -> String {

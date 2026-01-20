@@ -8,7 +8,7 @@ use libc::free;
 use log::info;
 use rand::rngs::OsRng;
 use rand::RngCore;
-use serde_json::{Value, Map};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fmt::Write;
@@ -109,31 +109,36 @@ pub fn scheme2json(expression: &str) -> Value {
     // - handle (round-trip) any normal json object
     // - if creating json object with special types, dev's responsibility to make it well-formed
 
-    // TODO: need to propagate errors propertly
-
     unsafe {
         let sc: *mut s7_scheme = s7_init();
-        
+
         // For symbols, quote them to prevent evaluation errors
         let quoted_expr = format!("'{}", expression);
-        
+
         // Evaluate the expression to get an s7 object
         let c_expr = CString::new(quoted_expr).unwrap_or_else(|_| CString::new("()").unwrap());
         let s7_obj = s7_eval_c_string(sc, c_expr.as_ptr());
-        
+
         let result = s7_obj_to_json(sc, s7_obj);
         s7_free(sc);
         result
     }
 }
 
-pub fn json2scheme(expression: Value) -> String {
+pub fn json2scheme(expression: Value) -> Result<String, String> {
     unsafe {
         let sc: *mut s7_scheme = s7_init();
-        let s7_obj = json_to_s7_obj(sc, &expression);
-        let result = obj2str(sc, s7_obj);
-        s7_free(sc);
-        result
+        match json_to_s7_obj(sc, &expression) {
+            Ok(s7_obj) => {
+                let result = obj2str(sc, s7_obj);
+                s7_free(sc);
+                Ok(result)
+            }
+            Err(err) => {
+                s7_free(sc);
+                Err(err)
+            }
+        }
     }
 }
 
@@ -516,10 +521,13 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
     } else if s7_is_string(obj) {
         let c_str = s7_string(obj);
         let rust_str = CStr::from_ptr(c_str).to_string_lossy();
-        
+
         // Check if it's a special type marker
         let mut special_type = Map::new();
-        special_type.insert("*type/string*".to_string(), Value::String(rust_str.to_string()));
+        special_type.insert(
+            "*type/string*".to_string(),
+            Value::String(rust_str.to_string()),
+        );
         Value::Object(special_type)
     } else if s7_is_symbol(obj) {
         let c_str = s7_symbol_name(obj);
@@ -530,13 +538,13 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
         if is_assoc_list(sc, obj) {
             let mut map = Map::new();
             let mut current = obj;
-            
+
             while !s7_is_null(sc, current) {
                 let pair = s7_car(current);
                 if s7_is_pair(pair) {
                     let key_obj = s7_car(pair);
                     let value_obj = s7_cdr(pair);
-                    
+
                     if s7_is_symbol(key_obj) {
                         let key_c_str = s7_symbol_name(key_obj);
                         let key = CStr::from_ptr(key_c_str).to_string_lossy().to_string();
@@ -551,7 +559,7 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
             // Regular list - convert to JSON array
             let mut array = Vec::new();
             let mut current = obj;
-            
+
             while !s7_is_null(sc, current) {
                 array.push(s7_obj_to_json(sc, s7_car(current)));
                 current = s7_cdr(current);
@@ -561,12 +569,12 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
     } else if s7_is_byte_vector(obj) {
         let mut hex_string = String::new();
         let len = s7_vector_length(obj);
-        
+
         for i in 0..len {
             let byte = s7_byte_vector_ref(obj, i);
             write!(&mut hex_string, "{:02x}", byte).unwrap();
         }
-        
+
         let mut special_type = Map::new();
         special_type.insert("*type/byte-vector*".to_string(), Value::String(hex_string));
         Value::Object(special_type)
@@ -574,11 +582,11 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
         let mut special_type = Map::new();
         let mut array = Vec::new();
         let len = s7_vector_length(obj);
-        
+
         for i in 0..len {
             array.push(s7_obj_to_json(sc, s7_vector_ref(sc, obj, i)));
         }
-        
+
         special_type.insert("*type/vector*".to_string(), Value::Array(array));
         Value::Object(special_type)
     } else {
@@ -588,101 +596,111 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
     }
 }
 
-unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> s7_pointer {
+unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> Result<s7_pointer, String> {
     match json {
-        Value::Null => s7_nil(sc),
-        Value::Bool(b) => s7_make_boolean(sc, *b),
+        Value::Null => Ok(s7_nil(sc)),
+        Value::Bool(b) => Ok(s7_make_boolean(sc, *b)),
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                s7_make_integer(sc, i)
+                Ok(s7_make_integer(sc, i))
             } else if let Some(f) = n.as_f64() {
-                s7_make_real(sc, f)
+                Ok(s7_make_real(sc, f))
             } else {
-                s7_nil(sc)
+                Err("Invalid number format in JSON".to_string())
             }
         }
-        Value::String(s) => {
-            let c_str = CString::new(s.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
-            s7_make_symbol(sc, c_str.as_ptr())
-        }
+        Value::String(s) => match CString::new(s.as_str()) {
+            Ok(c_str) => Ok(s7_make_symbol(sc, c_str.as_ptr())),
+            Err(_) => Err("Invalid string format in JSON - contains null bytes".to_string()),
+        },
         Value::Array(arr) => {
             if arr.is_empty() {
-                s7_nil(sc)
+                Ok(s7_nil(sc))
             } else {
                 // Create (list ...) expression
                 let mut result = s7_nil(sc);
-                
+
                 // Build arguments in reverse order
                 for item in arr.iter().rev() {
-                    let s7_item = json_to_s7_obj(sc, item);
+                    let s7_item = json_to_s7_obj(sc, item)?;
                     result = s7_cons(sc, s7_item, result);
                 }
-                result
+                Ok(result)
             }
         }
         Value::Object(obj) => {
             // Check for special type markers
             if obj.len() == 1 {
                 if let Some(Value::String(s)) = obj.get("*type/string*") {
-                    let c_str = CString::new(s.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
-                    return s7_make_string(sc, c_str.as_ptr());
+                    match CString::new(s.as_str()) {
+                        Ok(c_str) => return Ok(s7_make_string(sc, c_str.as_ptr())),
+                        Err(_) => {
+                            return Err(
+                                "Invalid string in *type/string* - contains null bytes".to_string()
+                            )
+                        }
+                    }
                 }
                 if let Some(Value::Array(arr)) = obj.get("*type/vector*") {
                     let len = arr.len() as i64;
                     let vector = s7_make_vector(sc, len);
                     for (i, item) in arr.iter().enumerate() {
-                        let s7_item = json_to_s7_obj(sc, item);
+                        let s7_item = json_to_s7_obj(sc, item)?;
                         s7_vector_set(sc, vector, i as i64, s7_item);
                     }
-                    return vector;
+                    return Ok(vector);
                 }
                 if let Some(Value::String(hex)) = obj.get("*type/byte-vector*") {
-
                     let bytes: Result<Vec<u8>, ParseIntError> = (0..hex.len())
                         .step_by(2)
                         .map(|i| {
                             if i + 2 <= hex.len() {
-                                u8::from_str_radix(&hex[i..i+2], 16)
+                                u8::from_str_radix(&hex[i..i + 2], 16)
                             } else if i + 1 <= hex.len() {
                                 // Handle odd-length hex string
-                                u8::from_str_radix(&hex[i..i+1], 16)
+                                u8::from_str_radix(&hex[i..i + 1], 16)
                             } else {
                                 Ok(0)
                             }
                         })
                         .collect();
 
-                    if let Ok(bytes) = bytes {
-                        let len = bytes.len() as i64;
-                        let bv = s7_make_byte_vector(sc, len, 1, std::ptr::null_mut());
-                        
-                        for (i, &byte) in bytes.iter().enumerate() {
-                            s7_byte_vector_set(bv, i as i64, byte);
+                    match bytes {
+                        Ok(bytes) => {
+                            let len = bytes.len() as i64;
+                            let bv = s7_make_byte_vector(sc, len, 1, std::ptr::null_mut());
+
+                            for (i, &byte) in bytes.iter().enumerate() {
+                                s7_byte_vector_set(bv, i as i64, byte);
+                            }
+
+                            return Ok(bv);
                         }
-                        
-                        return bv;
+                        Err(_) => {
+                            return Err("Invalid hex string in *type/byte-vector*".to_string())
+                        }
                     }
-    
-                    return s7_make_byte_vector(sc, 0, 0, std::ptr::null_mut());
                 }
             }
-            
+
             if obj.is_empty() {
-                s7_nil(sc)
+                Ok(s7_nil(sc))
             } else {
                 // Regular object - convert to association list
                 let mut result = s7_nil(sc);
-                
+
                 for (key, value) in obj.iter().rev() {
-                    let key_symbol = {
-                        let c_key = CString::new(key.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
-                        s7_make_symbol(sc, c_key.as_ptr())
+                    let key_symbol = match CString::new(key.as_str()) {
+                        Ok(c_key) => s7_make_symbol(sc, c_key.as_ptr()),
+                        Err(_) => {
+                            return Err(format!("Invalid key '{}' - contains null bytes", key))
+                        }
                     };
-                    let value_obj = json_to_s7_obj(sc, value);
+                    let value_obj = json_to_s7_obj(sc, value)?;
                     let pair = s7_cons(sc, key_symbol, value_obj);
                     result = s7_cons(sc, pair, result);
                 }
-                result
+                Ok(result)
             }
         }
     }
@@ -692,23 +710,23 @@ unsafe fn is_assoc_list(sc: *mut s7_scheme, obj: s7_pointer) -> bool {
     if s7_is_null(sc, obj) {
         return true;
     }
-    
+
     let mut current = obj;
     while !s7_is_null(sc, current) {
         if !s7_is_pair(current) {
             return false;
         }
-        
+
         let car = s7_car(current);
         if !s7_is_pair(car) {
             return false;
         }
-        
+
         let key = s7_car(car);
         if !s7_is_symbol(key) {
             return false;
         }
-        
+
         current = s7_cdr(current);
     }
     true
