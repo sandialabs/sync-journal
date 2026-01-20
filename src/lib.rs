@@ -145,7 +145,7 @@ impl Journal {
                 match scheme2json(result.as_str()) {
                     Ok(json_result) => json_result,
                     Err(_) => {
-                        // Return JSON equivalent of "(error 'syntax-error "Error parsing Scheme output to JSON")"
+                        // Return JSON equivalent of "(error 'parse-error "Error parsing Scheme output to JSON")"
                         serde_json::json!({
                             "error": {
                                 "type": "syntax-error",
