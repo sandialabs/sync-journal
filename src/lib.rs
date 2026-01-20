@@ -142,7 +142,18 @@ impl Journal {
         match json2scheme(query) {
             Ok(scheme_query) => {
                 let result = self.evaluate_record(NULL, scheme_query.as_str());
-                scheme2json(result.as_str())
+                match scheme2json(result.as_str()) {
+                    Ok(json_result) => json_result,
+                    Err(_) => {
+                        // Return JSON equivalent of "(error 'syntax-error "Error parsing Scheme output to JSON")"
+                        serde_json::json!({
+                            "error": {
+                                "type": "syntax-error",
+                                "message": "Error parsing Scheme output to JSON"
+                            }
+                        })
+                    }
+                }
             }
             Err(_) => {
                 // Return JSON equivalent of "(error 'syntax-error "Error parsing JSON input query")"

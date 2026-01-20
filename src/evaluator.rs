@@ -87,7 +87,7 @@ pub fn obj2str(sc: *mut s7_scheme, obj: *mut s7_cell) -> String {
     }
 }
 
-pub fn scheme2json(expression: &str) -> Value {
+pub fn scheme2json(expression: &str) -> Result<Value, String> {
     // <TYPE>: <JSON>
     // ------------------------------------------------------
     // symbol: "string"
@@ -505,18 +505,18 @@ fn primitive_print() -> Primitive {
     )
 }
 
-unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
+unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, String> {
     if s7_is_null(sc, obj) {
-        Value::Null
+        Ok(Value::Null)
     } else if s7_is_boolean(obj) {
-        Value::Bool(s7_boolean(sc, obj))
+        Ok(Value::Bool(s7_boolean(sc, obj)))
     } else if s7_is_integer(obj) {
-        Value::Number(serde_json::Number::from(s7_integer(obj)))
+        Ok(Value::Number(serde_json::Number::from(s7_integer(obj))))
     } else if s7_is_real(obj) {
         if let Some(num) = serde_json::Number::from_f64(s7_real(obj)) {
-            Value::Number(num)
+            Ok(Value::Number(num))
         } else {
-            Value::Null
+            Err("Invalid floating point number - cannot convert to JSON".to_string())
         }
     } else if s7_is_string(obj) {
         let c_str = s7_string(obj);
@@ -528,11 +528,11 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
             "*type/string*".to_string(),
             Value::String(rust_str.to_string()),
         );
-        Value::Object(special_type)
+        Ok(Value::Object(special_type))
     } else if s7_is_symbol(obj) {
         let c_str = s7_symbol_name(obj);
         let rust_str = CStr::from_ptr(c_str).to_string_lossy();
-        Value::String(rust_str.to_string())
+        Ok(Value::String(rust_str.to_string()))
     } else if s7_is_pair(obj) {
         // Check if it's an association list (for JSON objects)
         if is_assoc_list(sc, obj) {
@@ -548,23 +548,23 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
                     if s7_is_symbol(key_obj) {
                         let key_c_str = s7_symbol_name(key_obj);
                         let key = CStr::from_ptr(key_c_str).to_string_lossy().to_string();
-                        let value = s7_obj_to_json(sc, value_obj);
+                        let value = s7_obj_to_json(sc, value_obj)?;
                         map.insert(key, value);
                     }
                 }
                 current = s7_cdr(current);
             }
-            Value::Object(map)
+            Ok(Value::Object(map))
         } else {
             // Regular list - convert to JSON array
             let mut array = Vec::new();
             let mut current = obj;
 
             while !s7_is_null(sc, current) {
-                array.push(s7_obj_to_json(sc, s7_car(current)));
+                array.push(s7_obj_to_json(sc, s7_car(current))?);
                 current = s7_cdr(current);
             }
-            Value::Array(array)
+            Ok(Value::Array(array))
         }
     } else if s7_is_byte_vector(obj) {
         let mut hex_string = String::new();
@@ -577,22 +577,21 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Value {
 
         let mut special_type = Map::new();
         special_type.insert("*type/byte-vector*".to_string(), Value::String(hex_string));
-        Value::Object(special_type)
+        Ok(Value::Object(special_type))
     } else if s7_is_vector(obj) {
         let mut special_type = Map::new();
         let mut array = Vec::new();
         let len = s7_vector_length(obj);
 
         for i in 0..len {
-            array.push(s7_obj_to_json(sc, s7_vector_ref(sc, obj, i)));
+            array.push(s7_obj_to_json(sc, s7_vector_ref(sc, obj, i))?);
         }
 
         special_type.insert("*type/vector*".to_string(), Value::Array(array));
-        Value::Object(special_type)
+        Ok(Value::Object(special_type))
     } else {
-        // For other types, convert to string representation
-        let str_rep = obj2str(sc, obj);
-        Value::String(str_rep)
+        // For other types, return an error instead of converting to string
+        Err("Unknown Scheme type - cannot convert to JSON".to_string())
     }
 }
 
