@@ -145,24 +145,16 @@ impl Journal {
                 match scheme2json(result.as_str()) {
                     Ok(json_result) => json_result,
                     Err(_) => {
-                        // Return JSON equivalent of "(error 'parse-error "Error parsing Scheme output to JSON")"
-                        serde_json::json!({
-                            "error": {
-                                "type": "syntax-error",
-                                "message": "Error parsing Scheme output to JSON"
-                            }
-                        })
+                        // Return JSON equivalent of the actual error expression
+                        let error_expr = "(error 'syntax-error \"Error parsing Scheme output to JSON\")";
+                        scheme2json(error_expr).unwrap_or_else(|_| serde_json::json!(null))
                     }
                 }
             }
             Err(_) => {
-                // Return JSON equivalent of "(error 'syntax-error "Error parsing JSON input query")"
-                serde_json::json!({
-                    "error": {
-                        "type": "syntax-error",
-                        "message": "Error parsing JSON input query"
-                    }
-                })
+                // Return JSON equivalent of the actual error expression
+                let error_expr = "(error 'syntax-error \"Error parsing JSON input query\")";
+                scheme2json(error_expr).unwrap_or_else(|_| serde_json::json!(null))
             }
         }
     }
