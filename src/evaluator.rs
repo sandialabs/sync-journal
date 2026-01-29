@@ -542,7 +542,16 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
                 let pair = s7_car(current);
                 if s7_is_pair(pair) {
                     let key_obj = s7_car(pair);
-                    let value_obj = s7_cdr(pair);
+                    let cdr_pair = s7_cdr(pair);
+                    
+                    // Check if it's a list format (key value) instead of pair format (key . value)
+                    let value_obj = if s7_is_pair(cdr_pair) && s7_is_null(sc, s7_cdr(cdr_pair)) {
+                        // It's a list: (key value)
+                        s7_car(cdr_pair)
+                    } else {
+                        // It's a pair: (key . value)
+                        cdr_pair
+                    };
 
                     if s7_is_symbol(key_obj) {
                         let key_c_str = s7_symbol_name(key_obj);
@@ -696,7 +705,9 @@ unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> Result<s7_pointer,
                         }
                     };
                     let value_obj = json_to_s7_obj(sc, value)?;
-                    let pair = s7_cons(sc, key_symbol, value_obj);
+                    // Create a list (key value) instead of a pair (key . value)
+                    let value_list = s7_cons(sc, value_obj, s7_nil(sc));
+                    let pair = s7_cons(sc, key_symbol, value_list);
                     result = s7_cons(sc, pair, result);
                 }
                 Ok(result)
@@ -724,6 +735,18 @@ unsafe fn is_assoc_list(sc: *mut s7_scheme, obj: s7_pointer) -> bool {
         let key = s7_car(car);
         if !s7_is_symbol(key) {
             return false;
+        }
+
+        let cdr_part = s7_cdr(car);
+        // Accept both list format (key value) and pair format (key . value)
+        // List format: cdr_part should be a pair with one element
+        // Pair format: cdr_part can be anything
+        if s7_is_pair(cdr_part) {
+            // Check if it's a proper list with exactly one element
+            if !s7_is_null(sc, s7_cdr(cdr_part)) {
+                // It's not a single-element list, so it might be a pair format
+                // We'll accept it as valid for backward compatibility
+            }
         }
 
         current = s7_cdr(current);
