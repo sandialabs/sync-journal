@@ -535,18 +535,20 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
         let car = s7_car(obj);
         if s7_is_symbol(car) {
             let symbol_name_ptr = s7_symbol_name(car);
-            let symbol_name = CStr::from_ptr(symbol_name_ptr).to_string_lossy();
-            
-            if symbol_name == "quote" {
-                // Handle quote form: convert (quote expr) to ["quote", expr]
-                let cdr = s7_cdr(obj);
-                if s7_is_pair(cdr) && s7_is_null(sc, s7_cdr(cdr)) {
-                    // It's a proper quote form: (quote expr)
-                    let quoted_expr = s7_car(cdr);
-                    let mut array = Vec::new();
-                    array.push(Value::String("quote".to_string()));
-                    array.push(s7_obj_to_json(sc, quoted_expr)?);
-                    return Ok(Value::Array(array));
+            if !symbol_name_ptr.is_null() {
+                let symbol_name = CStr::from_ptr(symbol_name_ptr).to_string_lossy();
+                
+                if symbol_name == "quote" {
+                    // Handle quote form: convert (quote expr) to ["quote", expr]
+                    let cdr = s7_cdr(obj);
+                    if s7_is_pair(cdr) && s7_is_null(sc, s7_cdr(cdr)) {
+                        // It's a proper quote form: (quote expr)
+                        let quoted_expr = s7_car(cdr);
+                        let mut array = Vec::new();
+                        array.push(Value::String("quote".to_string()));
+                        array.push(s7_obj_to_json(sc, quoted_expr)?);
+                        return Ok(Value::Array(array));
+                    }
                 }
             }
         }
@@ -620,8 +622,22 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
         special_type.insert("*type/vector*".to_string(), Value::Array(array));
         Ok(Value::Object(special_type))
     } else {
-        // For other types, return an error instead of converting to string
-        Err("Unknown Scheme type - cannot convert to JSON".to_string())
+        // For debugging: let's see what type this actually is
+        let type_info = if s7_is_procedure(obj) {
+            "procedure"
+        } else if s7_is_macro(obj) {
+            "macro"
+        } else if s7_is_rational(obj) {
+            "rational"
+        } else if s7_is_complex(obj) {
+            "complex"
+        } else if s7_is_hash_table(obj) {
+            "hash-table"
+        } else {
+            "unknown"
+        };
+        
+        Err(format!("Unknown Scheme type '{}' - cannot convert to JSON", type_info))
     }
 }
 
