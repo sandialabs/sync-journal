@@ -625,7 +625,7 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
         // For debugging: let's see what type this actually is
         let type_info = if s7_is_procedure(obj) {
             "procedure"
-        } else if s7_is_macro(obj) {
+        } else if s7_is_macro(sc, obj) {
             "macro"
         } else if s7_is_rational(obj) {
             "rational"
