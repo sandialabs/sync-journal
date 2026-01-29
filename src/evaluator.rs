@@ -501,7 +501,6 @@ fn primitive_print() -> Primitive {
 }
 
 unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, String> {
-    println!("{:?}", obj2str(sc, obj));
     if s7_is_null(sc, obj) {
         Ok(Value::Null)
     } else if s7_is_boolean(obj) {
@@ -600,7 +599,6 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
         Ok(Value::Object(special_type))
     } else {
         // For other types, return an error instead of converting to string
-        println!("{:?}", obj2str(sc, obj));
         Err("Unknown Scheme type - cannot convert to JSON".to_string())
     }
 }
