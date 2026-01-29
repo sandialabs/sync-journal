@@ -194,14 +194,82 @@ fn test_special_type_round_trip() {
 
 #[test]
 fn test_association_list_conversion() {
-    // Test that association lists convert to JSON objects
-    let json_val = scheme2json("((name . \"Alice\") (age . 30))").unwrap();
+    // Test that proper association lists (with list format) convert to JSON objects
+    let json_val = scheme2json("((name \"Alice\") (age 30))").unwrap();
 
     if let Value::Object(obj) = &json_val {
         assert!(obj.contains_key("name"));
         assert!(obj.contains_key("age"));
+        assert_eq!(obj.get("name").unwrap(), &json!("Alice"));
+        assert_eq!(obj.get("age").unwrap(), &json!(30));
     } else {
-        // If not an object, should at least be a valid JSON structure
-        assert!(json_val.is_array() || json_val.is_object());
+        panic!("Expected JSON object for proper association list");
+    }
+}
+
+#[test]
+fn test_pair_type_conversion() {
+    // Test that pairs (with dot notation) convert to special type format
+    let json_val = scheme2json("(name . \"Alice\")").unwrap();
+    
+    if let Value::Object(obj) = &json_val {
+        assert!(obj.contains_key("*type/pair*"));
+        if let Some(Value::Array(arr)) = obj.get("*type/pair*") {
+            assert_eq!(arr.len(), 2);
+            assert_eq!(arr[0], json!("name"));
+            assert_eq!(arr[1], json!({"*type/string*": "Alice"}));
+        } else {
+            panic!("Expected array for *type/pair* value");
+        }
+    } else {
+        panic!("Expected JSON object for pair type");
+    }
+
+    // Test simple pair with symbols
+    let json_val = scheme2json("(a . b)").unwrap();
+    
+    if let Value::Object(obj) = &json_val {
+        assert!(obj.contains_key("*type/pair*"));
+        if let Some(Value::Array(arr)) = obj.get("*type/pair*") {
+            assert_eq!(arr.len(), 2);
+            assert_eq!(arr[0], json!("a"));
+            assert_eq!(arr[1], json!("b"));
+        }
+    }
+}
+
+#[test]
+fn test_pair_type_round_trip() {
+    // Test that pair special type converts back to scheme pair
+    let original = json!({"*type/pair*": ["key", "value"]});
+    let scheme = json2scheme(original.clone()).unwrap();
+    let back_to_json = scheme2json(&scheme).unwrap();
+    assert_eq!(original, back_to_json);
+
+    // Test with mixed types
+    let original = json!({"*type/pair*": [42, true]});
+    let scheme = json2scheme(original.clone()).unwrap();
+    let back_to_json = scheme2json(&scheme).unwrap();
+    assert_eq!(original, back_to_json);
+}
+
+#[test]
+fn test_mixed_association_structures() {
+    // Test that lists of pairs are treated as arrays of pair objects
+    let json_val = scheme2json("((a . 1) (b . 2))").unwrap();
+    
+    if let Value::Array(arr) = &json_val {
+        assert_eq!(arr.len(), 2);
+        
+        // Each element should be a pair object
+        for item in arr {
+            if let Value::Object(obj) = item {
+                assert!(obj.contains_key("*type/pair*"));
+            } else {
+                panic!("Expected pair objects in array");
+            }
+        }
+    } else {
+        panic!("Expected array for list of pairs");
     }
 }
