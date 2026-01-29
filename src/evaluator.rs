@@ -533,8 +533,8 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
         let rust_str = CStr::from_ptr(c_str).to_string_lossy();
         Ok(Value::String(rust_str.to_string()))
     } else if s7_is_pair(obj) {
-        // Check if it's an association list (for JSON objects)
-        if is_assoc_list(sc, obj) {
+        // Check if it's an association list with proper list format (for JSON objects)
+        if is_proper_assoc_list(sc, obj) {
             let mut map = Map::new();
             let mut current = obj;
 
@@ -544,25 +544,29 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
                     let key_obj = s7_car(pair);
                     let cdr_pair = s7_cdr(pair);
                     
-                    // Check if it's a list format (key value) instead of pair format (key . value)
-                    let value_obj = if s7_is_pair(cdr_pair) && s7_is_null(sc, s7_cdr(cdr_pair)) {
-                        // It's a list: (key value)
-                        s7_car(cdr_pair)
-                    } else {
-                        // It's a pair: (key . value)
-                        cdr_pair
-                    };
-
-                    if s7_is_symbol(key_obj) {
-                        let key_c_str = s7_symbol_name(key_obj);
-                        let key = CStr::from_ptr(key_c_str).to_string_lossy().to_string();
-                        let value = s7_obj_to_json(sc, value_obj)?;
-                        map.insert(key, value);
+                    // Only handle list format (key value)
+                    if s7_is_pair(cdr_pair) && s7_is_null(sc, s7_cdr(cdr_pair)) {
+                        let value_obj = s7_car(cdr_pair);
+                        
+                        if s7_is_symbol(key_obj) {
+                            let key_c_str = s7_symbol_name(key_obj);
+                            let key = CStr::from_ptr(key_c_str).to_string_lossy().to_string();
+                            let value = s7_obj_to_json(sc, value_obj)?;
+                            map.insert(key, value);
+                        }
                     }
                 }
                 current = s7_cdr(current);
             }
             Ok(Value::Object(map))
+        } else if s7_is_pair(obj) && !s7_is_pair(s7_cdr(obj)) {
+            // Handle pairs as special type
+            let mut special_type = Map::new();
+            let mut pair_array = Vec::new();
+            pair_array.push(s7_obj_to_json(sc, s7_car(obj))?);
+            pair_array.push(s7_obj_to_json(sc, s7_cdr(obj))?);
+            special_type.insert("*type/pair*".to_string(), Value::Array(pair_array));
+            Ok(Value::Object(special_type))
         } else {
             // Regular list - convert to JSON array
             let mut array = Vec::new();
@@ -689,6 +693,15 @@ unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> Result<s7_pointer,
                         }
                     }
                 }
+                if let Some(Value::Array(arr)) = obj.get("*type/pair*") {
+                    if arr.len() == 2 {
+                        let car = json_to_s7_obj(sc, &arr[0])?;
+                        let cdr = json_to_s7_obj(sc, &arr[1])?;
+                        return Ok(s7_cons(sc, car, cdr));
+                    } else {
+                        return Err("*type/pair* must contain exactly 2 elements".to_string());
+                    }
+                }
             }
 
             if obj.is_empty() {
@@ -716,7 +729,7 @@ unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> Result<s7_pointer,
     }
 }
 
-unsafe fn is_assoc_list(sc: *mut s7_scheme, obj: s7_pointer) -> bool {
+unsafe fn is_proper_assoc_list(sc: *mut s7_scheme, obj: s7_pointer) -> bool {
     if s7_is_null(sc, obj) {
         return true;
     }
@@ -738,15 +751,9 @@ unsafe fn is_assoc_list(sc: *mut s7_scheme, obj: s7_pointer) -> bool {
         }
 
         let cdr_part = s7_cdr(car);
-        // Accept both list format (key value) and pair format (key . value)
-        // List format: cdr_part should be a pair with one element
-        // Pair format: cdr_part can be anything
-        if s7_is_pair(cdr_part) {
-            // Check if it's a proper list with exactly one element
-            if !s7_is_null(sc, s7_cdr(cdr_part)) {
-                // It's not a single-element list, so it might be a pair format
-                // We'll accept it as valid for backward compatibility
-            }
+        // Only accept proper list format (key value)
+        if !s7_is_pair(cdr_part) || !s7_is_null(sc, s7_cdr(cdr_part)) {
+            return false;
         }
 
         current = s7_cdr(current);
