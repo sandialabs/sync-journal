@@ -145,15 +145,14 @@ impl Journal {
                 match scheme2json(result.as_str()) {
                     Ok(json_result) => json_result,
                     Err(_) => {
-                        // If scheme2json fails, it means the result contains types that can't be converted
-                        // This likely means it's an error expression, so return a structured error
-                        serde_json::json!(["error", "syntax-error", "Error parsing Scheme output to JSON"])
+                        scheme2json("(error parse-error \"Failed to parse Scheme to JSON\")")
+                            .expect("Error parsing the JSON error message")
                     }
                 }
             }
             Err(_) => {
-                // Return JSON equivalent of the actual error expression as an array
-                serde_json::json!(["error", "syntax-error", "Error parsing JSON input query"])
+                scheme2json("(error parse-error \"Failed to parse JSON to Scheme\")")
+                    .expect("Error parsing the JSON error message")
             }
         }
     }

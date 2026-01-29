@@ -621,18 +621,33 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
 
         special_type.insert("*type/vector*".to_string(), Value::Array(array));
         Ok(Value::Object(special_type))
+    } else if s7_is_rational(obj) {
+        // Handle rational numbers as special type
+        let rational_str = obj2str(sc, obj);
+        let mut special_type = Map::new();
+        special_type.insert("*type/rational*".to_string(), Value::String(rational_str));
+        Ok(Value::Object(special_type))
+    } else if s7_is_complex(obj) {
+        // Handle complex numbers as special type
+        let complex_str = obj2str(sc, obj);
+        let mut special_type = Map::new();
+        special_type.insert("*type/complex*".to_string(), Value::String(complex_str));
+        Ok(Value::Object(special_type))
+    } else if s7_is_hash_table(obj) {
+        // Handle hash tables as special type
+        let mut special_type = Map::new();
+        let mut pairs = Vec::new();
+        
+        // Convert hash table to array of [key, value] pairs
+        // This is a simplified approach - we'd need to iterate through the hash table
+        special_type.insert("*type/hash-table*".to_string(), Value::Array(pairs));
+        Ok(Value::Object(special_type))
     } else {
         // For debugging: let's see what type this actually is
         let type_info = if s7_is_procedure(obj) {
             "procedure"
         } else if s7_is_macro(sc, obj) {
             "macro"
-        } else if s7_is_rational(obj) {
-            "rational"
-        } else if s7_is_complex(obj) {
-            "complex"
-        } else if s7_is_hash_table(obj) {
-            "hash-table"
         } else {
             "unknown"
         };
