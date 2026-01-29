@@ -112,9 +112,11 @@ pub fn scheme2json(expression: &str) -> Result<Value, String> {
     unsafe {
         let sc: *mut s7_scheme = s7_init();
 
-        // Evaluate the expression directly - quotes will be handled by s7
+        // Parse the expression without evaluating it
         let c_expr = CString::new(expression).unwrap_or_else(|_| CString::new("()").unwrap());
-        let s7_obj = s7_eval_c_string(sc, c_expr.as_ptr());
+        let input_port = s7_open_input_string(sc, c_expr.as_ptr());
+        let s7_obj = s7_read(sc, input_port);
+        s7_close_input_port(sc, input_port);
 
         let result = s7_obj_to_json(sc, s7_obj);
         s7_free(sc);

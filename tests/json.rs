@@ -273,3 +273,20 @@ fn test_mixed_association_structures() {
         panic!("Expected array for list of pairs");
     }
 }
+
+#[test]
+fn test_quote_handling() {
+    // Test that quoted expressions are parsed as quote forms, not evaluated
+    let json_val = scheme2json("'(a b c)").unwrap();
+    
+    // Should be an array with "quote" as first element and the list as second
+    assert_eq!(json_val, json!(["quote", ["a", "b", "c"]]));
+
+    // Test simple quoted symbol
+    let json_val = scheme2json("'hello").unwrap();
+    assert_eq!(json_val, json!(["quote", "hello"]));
+
+    // Test quoted number
+    let json_val = scheme2json("'42").unwrap();
+    assert_eq!(json_val, json!(["quote", 42]));
+}
