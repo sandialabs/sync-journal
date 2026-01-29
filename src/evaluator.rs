@@ -531,6 +531,26 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
         let rust_str = CStr::from_ptr(c_str).to_string_lossy();
         Ok(Value::String(rust_str.to_string()))
     } else if s7_is_pair(obj) {
+        // Check if it's a quote form first
+        let car = s7_car(obj);
+        if s7_is_symbol(car) {
+            let symbol_name_ptr = s7_symbol_name(car);
+            let symbol_name = CStr::from_ptr(symbol_name_ptr).to_string_lossy();
+            
+            if symbol_name == "quote" {
+                // Handle quote form: convert (quote expr) to ["quote", expr]
+                let cdr = s7_cdr(obj);
+                if s7_is_pair(cdr) && s7_is_null(sc, s7_cdr(cdr)) {
+                    // It's a proper quote form: (quote expr)
+                    let quoted_expr = s7_car(cdr);
+                    let mut array = Vec::new();
+                    array.push(Value::String("quote".to_string()));
+                    array.push(s7_obj_to_json(sc, quoted_expr)?);
+                    return Ok(Value::Array(array));
+                }
+            }
+        }
+        
         // Check if it's an association list with proper list format (for JSON objects)
         if is_proper_assoc_list(sc, obj) {
             let mut map = Map::new();
