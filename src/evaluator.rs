@@ -489,6 +489,8 @@ fn primitive_print() -> Primitive {
             current_arg = s7_cdr(current_arg);
         }
 
+        println!("{}", result);
+
         if s7_is_null(sc, args) {
             s7_unspecified(sc)
         } else {
