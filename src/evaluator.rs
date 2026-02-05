@@ -96,6 +96,7 @@ pub fn scheme2json(expression: &str) -> Result<Value, String> {
     // list: []
     // symbol assoc lists: { }
     // special types
+    // - @pair: {"*type/pair*": ["first", "second"]}
     // - @string: { "*type/string*": "this is my string" }
     // - @rational: { "*type/rational*": "5/5" }
     // - @complex: { "*type/complex*": "5/5" }
@@ -103,11 +104,6 @@ pub fn scheme2json(expression: &str) -> Result<Value, String> {
     // - @byte-vector: {"*type/byte-vector*: "deadbeef0000" }
     // - @float-vector: {"*type/float-vector*": [3.2, 8.6, 0.1]}
     // - @hash-table: {"*type/hash-table*": [["a", 6], [53, 199]]}
-
-    // guarantees
-    // - handle (round-trip) any lisp object that doesn't involve nodes or procedures
-    // - handle (round-trip) any normal json object
-    // - if creating json object with special types, dev's responsibility to make it well-formed
 
     unsafe {
         let sc: *mut s7_scheme = s7_init();
