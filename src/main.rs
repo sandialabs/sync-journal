@@ -3,37 +3,32 @@ use log::info;
 use rocket::config::Config as RocketConfig;
 use rocket::data::{Limits, ToByteUnit};
 use rocket::response::content::RawHtml;
+use rocket::serde::json::Json;
 use rocket::{get, post, routes};
+use serde_json::Value;
 use std::net::{IpAddr, Ipv6Addr};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MICRO: f64 = 1000000.0;
 
-#[get("/")]
-async fn index() -> RawHtml<String> {
-    RawHtml(format!(
-        r#"<!DOCTYPE html>
+const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <html>
     <head>
  <h2>Journal SDK Home</h2>
     </head>
     <body style="padding: 0 20px; font-family: 'Consolas'">
  <ul>
-     <li><a href="/interface">Interface</a></li>
+     <li><a href="/interface">LISP Interface</a></li>
+     <li><a href="/interface/json">JSON Interface</a></li>
  </ul>
     </body>
 </html>
-"#,
-    ))
-}
+"#;
 
-#[get("/interface", format = "text/html")]
-async fn inform() -> RawHtml<String> {
-    RawHtml(String::from(
-        r#"<!DOCTYPE html>
+const INTERFACE_HTML: &str = r#"<!DOCTYPE html>
 <html>
     <head>
- <h2>Interface</h2>
+ <h2>{}</h2>
     </head>
     <body style="padding: 0 20px; font-family: 'Consolas'">
  <textarea id="query" rows="8" cols="128" spellcheck="false"></textarea>
@@ -48,6 +43,9 @@ async fn inform() -> RawHtml<String> {
   let query = document.getElementById('query').value;
   fetch('', {
       method: 'POST',
+      headers: {
+          'Content-Type': 'application/json',
+      },
       body: query,
   }).then(response => {
       return response.text();
@@ -69,13 +67,32 @@ async fn inform() -> RawHtml<String> {
  </script>
     </body>
 </html>
-"#,
-    ))
+"#;
+
+#[get("/")]
+async fn index() -> RawHtml<String> {
+    RawHtml(String::from(INDEX_HTML))
+}
+
+#[get("/interface", format = "text/html")]
+async fn inform_lisp() -> RawHtml<String> {
+    RawHtml(INTERFACE_HTML.replace("{}", "LISP Interface"))
 }
 
 #[post("/interface", data = "<query>", rank = 1)]
-async fn evaluate(query: &str) -> String {
+async fn evaluate_lisp(query: &str) -> String {
     JOURNAL.evaluate(query)
+}
+
+#[get("/interface/json", format = "text/html")]
+async fn inform_json() -> RawHtml<String> {
+    RawHtml(INTERFACE_HTML.replace("{}", "JSON Interface"))
+}
+
+#[post("/interface/json", data = "<query>", format = "json", rank = 1)]
+async fn evaluate_json(query: Json<Value>) -> Json<Value> {
+    let result = JOURNAL.evaluate_json(query.into_inner());
+    Json(result)
 }
 
 #[rocket::main]
@@ -135,7 +152,16 @@ async fn main() {
     }
 
     let _ = rocket::build()
-        .mount("/", routes![index, inform, evaluate,])
+        .mount(
+            "/",
+            routes![
+                index,
+                inform_lisp,
+                evaluate_lisp,
+                inform_json,
+                evaluate_json
+            ],
+        )
         .configure(rocket_config)
         .launch()
         .await;

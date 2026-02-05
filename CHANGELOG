@@ -2,6 +2,12 @@
 The purpose of this changelog is to document new features and breaking changes that are most likely to affect developers
 ------------------------------------------------------------------------------------------------------------------------
 
+--- v1.0.5 (2025.02.26) ---
+
+- Add JSON <-> Scheme interface
+- Separate crypto primitives into separate namespace
+- Add unix time primitive
+
 --- v1.0.4 (2025.09.14) ---
 
 - Modify core merkle tree structure to support "stumps" and branch digest propogation
