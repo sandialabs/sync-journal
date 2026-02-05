@@ -15,14 +15,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions: write-all
     steps:
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y llvm-dev libclang-dev clang
+      # - name: Install dependencies
+      #   run: |
+      #     sudo apt update
+      #     sudo apt install -y llvm-dev libclang-dev clang
       # - name: Install rust
       #   uses: moonrepo/setup-rust@v1
-      # - name: Checkout code
-      #   uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       # - name: Build project
       #   run: cargo build
       # - name: Test project
