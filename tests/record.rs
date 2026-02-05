@@ -1,3 +1,4 @@
+use hex;
 use journal_sdk::{Word, JOURNAL, SIZE};
 use rand::RngCore;
 use std::fs;

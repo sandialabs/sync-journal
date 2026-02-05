@@ -17,7 +17,7 @@ pub fn setup() -> (String, impl Fn(&str, &str)) {
     (record.clone(), move |expression, expected| {
         let result = JOURNAL.evaluate(
             format!(
-                "(sync-call '{} #t (hex-string->byte-vector \"{}\")))",
+                "(sync-call '{} #t (hex-string->byte-vector \"{}\"))",
                 expression, record,
             )
             .as_str(),
