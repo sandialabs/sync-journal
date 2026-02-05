@@ -1,6 +1,6 @@
 # --- Build ---
 
-FROM alpine:3.21.3 AS builder
+FROM alpine:3.23.3 AS builder
 
 ARG RUST_LOG=info
 
@@ -24,7 +24,7 @@ RUN cargo build --release
 
 # --- Deploy ---
 
-FROM alpine:3.21.3
+FROM alpine:3.23.3
 
 WORKDIR /srv
 COPY --from=builder /usr/lib/libgcc_s.so.1 /usr/lib/
