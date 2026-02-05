@@ -1,12 +1,12 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
 pub use crate::config::Config;
-use crate::evaluator::{json2scheme, obj2str, scheme2json, Evaluator, Primitive, Type};
+use crate::evaluator::{Evaluator, Primitive, Type, json2scheme, obj2str, scheme2json};
 use crate::extensions::crypto::{
     primitive_s7_crypto_generate, primitive_s7_crypto_sign, primitive_s7_crypto_verify,
 };
-use crate::persistor::{MemoryPersistor, Persistor, PersistorAccessError, PERSISTOR};
-pub use crate::persistor::{Word, SIZE};
+use crate::persistor::{MemoryPersistor, PERSISTOR, Persistor, PersistorAccessError};
+pub use crate::persistor::{SIZE, Word};
 use libc;
 use log::{debug, info};
 use once_cell::sync::Lazy;
@@ -144,16 +144,12 @@ impl Journal {
                 let result = self.evaluate_record(NULL, scheme_query.as_str());
                 match scheme2json(result.as_str()) {
                     Ok(json_result) => json_result,
-                    Err(_) => {
-                        scheme2json("(error parse-error \"Failed to parse Scheme to JSON\")")
-                            .expect("Error parsing the JSON error message")
-                    }
+                    Err(_) => scheme2json("(error parse-error \"Failed to parse Scheme to JSON\")")
+                        .expect("Error parsing the JSON error message"),
                 }
             }
-            Err(_) => {
-                scheme2json("(error parse-error \"Failed to parse JSON to Scheme\")")
-                    .expect("Error parsing the JSON error message")
-            }
+            Err(_) => scheme2json("(error parse-error \"Failed to parse JSON to Scheme\")")
+                .expect("Error parsing the JSON error message"),
         }
     }
 
@@ -400,19 +396,23 @@ impl Journal {
 }
 
 unsafe fn sync_error(sc: *mut s7::s7_scheme, string: &str) -> s7::s7_pointer {
-    let c_string = CString::new(string).expect("Failed to create CString from string");
+    unsafe {
+        let c_string = CString::new(string).expect("Failed to create CString from string");
 
-    s7::s7_error(
-        sc,
-        s7::s7_make_symbol(sc, c"sync-web-error".as_ptr()),
-        s7::s7_list(sc, 1, s7::s7_make_string(sc, c_string.as_ptr())),
-    )
+        s7::s7_error(
+            sc,
+            s7::s7_make_symbol(sc, c"sync-web-error".as_ptr()),
+            s7::s7_list(sc, 1, s7::s7_make_string(sc, c_string.as_ptr())),
+        )
+    }
 }
 
 fn type_s7_sync_node() -> Type {
     unsafe extern "C" fn free(_sc: *mut s7::s7_scheme, obj: s7::s7_pointer) -> s7::s7_pointer {
-        sync_heap_free(s7::s7_c_object_value(obj));
-        std::ptr::null_mut()
+        unsafe {
+            sync_heap_free(s7::s7_c_object_value(obj));
+            std::ptr::null_mut()
+        }
     }
 
     unsafe extern "C" fn mark(_sc: *mut s7::s7_scheme, _obj: s7::s7_pointer) -> s7::s7_pointer {
@@ -420,35 +420,39 @@ fn type_s7_sync_node() -> Type {
     }
 
     unsafe extern "C" fn is_equal(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        match sync_is_node(s7::s7_cadr(args)) {
-            true => {
-                let word1 = sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)));
-                let word2 = sync_heap_read(s7::s7_c_object_value(s7::s7_cadr(args)));
-                s7::s7_make_boolean(sc, word1 == word2)
+        unsafe {
+            match sync_is_node(s7::s7_cadr(args)) {
+                true => {
+                    let word1 = sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)));
+                    let word2 = sync_heap_read(s7::s7_c_object_value(s7::s7_cadr(args)));
+                    s7::s7_make_boolean(sc, word1 == word2)
+                }
+                false => s7::s7_wrong_type_arg_error(
+                    sc,
+                    c"equal?".as_ptr(),
+                    2,
+                    s7::s7_cadr(args),
+                    c"a sync-node".as_ptr(),
+                ),
             }
-            false => s7::s7_wrong_type_arg_error(
-                sc,
-                c"equal?".as_ptr(),
-                2,
-                s7::s7_cadr(args),
-                c"a sync-node".as_ptr(),
-            ),
         }
     }
 
     unsafe extern "C" fn to_string(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        string_to_s7(
-            sc,
-            format!(
-                "(sync-node #u({}))",
-                sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)))
-                    .iter()
-                    .map(|&byte| byte.to_string())
-                    .collect::<Vec<String>>()
-                    .join(" "),
+        unsafe {
+            string_to_s7(
+                sc,
+                format!(
+                    "(sync-node #u({}))",
+                    sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)))
+                        .iter()
+                        .map(|&byte| byte.to_string())
+                        .collect::<Vec<String>>()
+                        .join(" "),
+                )
+                .as_str(),
             )
-            .as_str(),
-        )
+        }
     }
 
     Type::new(c"sync-node", free, mark, is_equal, to_string)
@@ -456,35 +460,37 @@ fn type_s7_sync_node() -> Type {
 
 fn primitive_s7_sync_stub() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let bv = s7::s7_car(args);
+        unsafe {
+            let bv = s7::s7_car(args);
 
-        if !s7::s7_is_byte_vector(bv) || s7::s7_vector_length(bv) as usize != SIZE {
-            return s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-cut".as_ptr(),
-                1,
-                s7::s7_car(args),
-                c"a hash-sized byte-vector".as_ptr(),
-            );
-        }
+            if !s7::s7_is_byte_vector(bv) || s7::s7_vector_length(bv) as usize != SIZE {
+                return s7::s7_wrong_type_arg_error(
+                    sc,
+                    c"sync-cut".as_ptr(),
+                    1,
+                    s7::s7_car(args),
+                    c"a hash-sized byte-vector".as_ptr(),
+                );
+            }
 
-        let mut digest = [0 as u8; SIZE];
-        for i in 0..SIZE {
-            digest[i] = s7::s7_byte_vector_ref(bv, i as i64);
-        }
+            let mut digest = [0 as u8; SIZE];
+            for i in 0..SIZE {
+                digest[i] = s7::s7_byte_vector_ref(bv, i as i64);
+            }
 
-        let persistor = {
-            let session = SESSIONS.lock().expect("Failed to acquire SESSIONS lock");
-            &session
-                .get(&(sc as usize))
-                .expect("Session not found for given context")
-                .persistor
-                .clone()
-        };
+            let persistor = {
+                let session = SESSIONS.lock().expect("Failed to acquire SESSIONS lock");
+                &session
+                    .get(&(sc as usize))
+                    .expect("Session not found for given context")
+                    .persistor
+                    .clone()
+            };
 
-        match persistor.stump_set(digest) {
-            Ok(stump) => s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(stump)),
-            Err(_) => sync_error(sc, "Journal is unable to create stub node (sync-stub)"),
+            match persistor.stump_set(digest) {
+                Ok(stump) => s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(stump)),
+                Err(_) => sync_error(sc, "Journal is unable to create stub node (sync-stub)"),
+            }
         }
     }
 
@@ -500,31 +506,33 @@ fn primitive_s7_sync_stub() -> Primitive {
 
 fn primitive_s7_sync_hash() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let data_bv = s7::s7_car(args);
+        unsafe {
+            let data_bv = s7::s7_car(args);
 
-        // check the input arguments
-        if !s7::s7_is_byte_vector(data_bv) {
-            return s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-hash".as_ptr(),
-                1,
-                data_bv,
-                c"a byte-vector".as_ptr(),
-            );
-        }
+            // check the input arguments
+            if !s7::s7_is_byte_vector(data_bv) {
+                return s7::s7_wrong_type_arg_error(
+                    sc,
+                    c"sync-hash".as_ptr(),
+                    1,
+                    data_bv,
+                    c"a byte-vector".as_ptr(),
+                );
+            }
 
-        // convert to rust data types
-        let mut data = vec![];
-        for i in 0..s7::s7_vector_length(data_bv) {
-            data.push(s7::s7_byte_vector_ref(data_bv, i as i64))
-        }
+            // convert to rust data types
+            let mut data = vec![];
+            for i in 0..s7::s7_vector_length(data_bv) {
+                data.push(s7::s7_byte_vector_ref(data_bv, i as i64))
+            }
 
-        let digest = Sha256::digest(data).to_vec();
-        let digest_bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
-        for i in 0..SIZE {
-            s7::s7_byte_vector_set(digest_bv, i as i64, digest[i]);
+            let digest = Sha256::digest(data).to_vec();
+            let digest_bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
+            for i in 0..SIZE {
+                s7::s7_byte_vector_set(digest_bv, i as i64, digest[i]);
+            }
+            digest_bv
         }
-        digest_bv
     }
 
     Primitive::new(
@@ -539,41 +547,43 @@ fn primitive_s7_sync_hash() -> Primitive {
 
 fn primitive_s7_sync_node() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let digest = s7::s7_car(args);
+        unsafe {
+            let digest = s7::s7_car(args);
 
-        if !s7::s7_is_byte_vector(digest) || s7::s7_vector_length(digest) as usize != SIZE {
-            return s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-node".as_ptr(),
-                1,
-                digest,
-                c"a hash-sized byte-vector".as_ptr(),
-            );
-        }
+            if !s7::s7_is_byte_vector(digest) || s7::s7_vector_length(digest) as usize != SIZE {
+                return s7::s7_wrong_type_arg_error(
+                    sc,
+                    c"sync-node".as_ptr(),
+                    1,
+                    digest,
+                    c"a hash-sized byte-vector".as_ptr(),
+                );
+            }
 
-        let mut word = [0 as u8; SIZE];
-        for i in 0..SIZE {
-            word[i] = s7::s7_byte_vector_ref(digest, i as i64);
-        }
+            let mut word = [0 as u8; SIZE];
+            for i in 0..SIZE {
+                word[i] = s7::s7_byte_vector_ref(digest, i as i64);
+            }
 
-        let persistor = {
-            let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-            &session
-                .get(&(sc as usize))
-                .expect("Session not found for sync-node")
-                .persistor
-                .clone()
-        };
+            let persistor = {
+                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                &session
+                    .get(&(sc as usize))
+                    .expect("Session not found for sync-node")
+                    .persistor
+                    .clone()
+            };
 
-        if word == NULL
-            || persistor.branch_get(word).is_ok()
-            || PERSISTOR.branch_get(word).is_ok()
-            || persistor.stump_get(word).is_ok()
-            || PERSISTOR.stump_get(word).is_ok()
-        {
-            s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(word))
-        } else {
-            sync_error(sc, "Node does not exist in this journal (sync-node)")
+            if word == NULL
+                || persistor.branch_get(word).is_ok()
+                || PERSISTOR.branch_get(word).is_ok()
+                || persistor.stump_get(word).is_ok()
+                || PERSISTOR.stump_get(word).is_ok()
+            {
+                s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(word))
+            } else {
+                sync_error(sc, "Node does not exist in this journal (sync-node)")
+            }
         }
     }
 
@@ -589,7 +599,7 @@ fn primitive_s7_sync_node() -> Primitive {
 
 fn primitive_s7_sync_is_node() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        s7::s7_make_boolean(sc, sync_is_node(s7::s7_car(args)))
+        unsafe { s7::s7_make_boolean(sc, sync_is_node(s7::s7_car(args))) }
     }
 
     Primitive::new(
@@ -604,7 +614,7 @@ fn primitive_s7_sync_is_node() -> Primitive {
 
 fn primitive_s7_sync_null() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, _args: s7::s7_pointer) -> s7::s7_pointer {
-        s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(NULL))
+        unsafe { s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(NULL)) }
     }
 
     Primitive::new(
@@ -619,23 +629,25 @@ fn primitive_s7_sync_null() -> Primitive {
 
 fn primitive_s7_sync_is_null() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let arg = s7::s7_car(args);
-        match sync_is_node(arg) || s7::s7_is_byte_vector(arg) {
-            false => s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-null?".as_ptr(),
-                1,
-                arg,
-                c"a sync-node or byte-vector".as_ptr(),
-            ),
-            true => {
-                let word = sync_heap_read(s7::s7_c_object_value(arg));
-                for i in 0..SIZE {
-                    if word[i] != 0 {
-                        return s7::s7_make_boolean(sc, false);
+        unsafe {
+            let arg = s7::s7_car(args);
+            match sync_is_node(arg) || s7::s7_is_byte_vector(arg) {
+                false => s7::s7_wrong_type_arg_error(
+                    sc,
+                    c"sync-null?".as_ptr(),
+                    1,
+                    arg,
+                    c"a sync-node or byte-vector".as_ptr(),
+                ),
+                true => {
+                    let word = sync_heap_read(s7::s7_c_object_value(arg));
+                    for i in 0..SIZE {
+                        if word[i] != 0 {
+                            return s7::s7_make_boolean(sc, false);
+                        }
                     }
+                    s7::s7_make_boolean(sc, true)
                 }
-                s7::s7_make_boolean(sc, true)
             }
         }
     }
@@ -652,29 +664,31 @@ fn primitive_s7_sync_is_null() -> Primitive {
 
 fn primitive_s7_sync_is_pair() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let arg = s7::s7_car(args);
-        match sync_is_node(arg) || s7::s7_is_byte_vector(arg) {
-            false => s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-pair?".as_ptr(),
-                1,
-                arg,
-                c"a sync-node or byte-vector".as_ptr(),
-            ),
-            true => {
-                let word = sync_heap_read(s7::s7_c_object_value(arg));
-                let persistor = {
-                    let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-                    &session
-                        .get(&(sc as usize))
-                        .expect("Session not found for sync-pair?")
-                        .persistor
-                        .clone()
-                };
-                s7::s7_make_boolean(
+        unsafe {
+            let arg = s7::s7_car(args);
+            match sync_is_node(arg) || s7::s7_is_byte_vector(arg) {
+                false => s7::s7_wrong_type_arg_error(
                     sc,
-                    persistor.branch_get(word).is_ok() || PERSISTOR.branch_get(word).is_ok(),
-                )
+                    c"sync-pair?".as_ptr(),
+                    1,
+                    arg,
+                    c"a sync-node or byte-vector".as_ptr(),
+                ),
+                true => {
+                    let word = sync_heap_read(s7::s7_c_object_value(arg));
+                    let persistor = {
+                        let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                        &session
+                            .get(&(sc as usize))
+                            .expect("Session not found for sync-pair?")
+                            .persistor
+                            .clone()
+                    };
+                    s7::s7_make_boolean(
+                        sc,
+                        persistor.branch_get(word).is_ok() || PERSISTOR.branch_get(word).is_ok(),
+                    )
+                }
             }
         }
     }
@@ -691,29 +705,31 @@ fn primitive_s7_sync_is_pair() -> Primitive {
 
 fn primitive_s7_sync_is_stub() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let arg = s7::s7_car(args);
-        match sync_is_node(arg) || s7::s7_is_byte_vector(arg) {
-            false => s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-stub?".as_ptr(),
-                1,
-                arg,
-                c"a sync-node or byte-vector".as_ptr(),
-            ),
-            true => {
-                let word = sync_heap_read(s7::s7_c_object_value(arg));
-                let persistor = {
-                    let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-                    &session
-                        .get(&(sc as usize))
-                        .expect("Session not found for sync-stub?")
-                        .persistor
-                        .clone()
-                };
-                s7::s7_make_boolean(
+        unsafe {
+            let arg = s7::s7_car(args);
+            match sync_is_node(arg) || s7::s7_is_byte_vector(arg) {
+                false => s7::s7_wrong_type_arg_error(
                     sc,
-                    persistor.stump_get(word).is_ok() || PERSISTOR.stump_get(word).is_ok(),
-                )
+                    c"sync-stub?".as_ptr(),
+                    1,
+                    arg,
+                    c"a sync-node or byte-vector".as_ptr(),
+                ),
+                true => {
+                    let word = sync_heap_read(s7::s7_c_object_value(arg));
+                    let persistor = {
+                        let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                        &session
+                            .get(&(sc as usize))
+                            .expect("Session not found for sync-stub?")
+                            .persistor
+                            .clone()
+                    };
+                    s7::s7_make_boolean(
+                        sc,
+                        persistor.stump_get(word).is_ok() || PERSISTOR.stump_get(word).is_ok(),
+                    )
+                }
             }
         }
     }
@@ -730,22 +746,24 @@ fn primitive_s7_sync_is_stub() -> Primitive {
 
 fn primitive_s7_sync_digest() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        match sync_is_node(s7::s7_car(args)) {
-            false => s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-digest".as_ptr(),
-                1,
-                s7::s7_car(args),
-                c"a sync-node".as_ptr(),
-            ),
-            true => {
-                let word = sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)));
-                let digest = sync_digest(sc, word).expect("Failed to obtain digest");
-                let bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
-                for i in 0..SIZE {
-                    s7::s7_byte_vector_set(bv, i as i64, digest[i]);
+        unsafe {
+            match sync_is_node(s7::s7_car(args)) {
+                false => s7::s7_wrong_type_arg_error(
+                    sc,
+                    c"sync-digest".as_ptr(),
+                    1,
+                    s7::s7_car(args),
+                    c"a sync-node".as_ptr(),
+                ),
+                true => {
+                    let word = sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)));
+                    let digest = sync_digest(sc, word).expect("Failed to obtain digest");
+                    let bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
+                    for i in 0..SIZE {
+                        s7::s7_byte_vector_set(bv, i as i64, digest[i]);
+                    }
+                    bv
                 }
-                bv
             }
         }
     }
@@ -762,61 +780,67 @@ fn primitive_s7_sync_digest() -> Primitive {
 
 fn primitive_s7_sync_cons() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let persistor = {
-            let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-            &session
-                .get(&(sc as usize))
-                .expect("Session not found for sync-cons")
-                .persistor
-                .clone()
-        };
+        unsafe {
+            let persistor = {
+                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                &session
+                    .get(&(sc as usize))
+                    .expect("Session not found for sync-cons")
+                    .persistor
+                    .clone()
+            };
 
-        let handle_arg = |obj, number| {
-            if sync_is_node(obj) {
-                Ok(sync_heap_read(s7::s7_c_object_value(obj)))
-            } else if s7::s7_is_byte_vector(obj) {
-                let mut content = vec![];
-                for i in 0..s7::s7_vector_length(obj) {
-                    content.push(s7::s7_byte_vector_ref(obj, i as i64))
-                }
-                match persistor.leaf_set(content) {
-                    Ok(atom) => Ok(atom),
-                    Err(_) => Err(sync_error(
-                        sc,
-                        "Journal is unable to add leaf node (sync-cons)",
-                    )),
-                }
-            } else {
-                Err(s7::s7_wrong_type_arg_error(
-                    sc,
-                    c"sync-cons".as_ptr(),
-                    number,
-                    obj,
-                    c"a byte vector or a sync node".as_ptr(),
-                ))
-            }
-        };
-
-        match (
-            handle_arg(s7::s7_car(args), 1),
-            handle_arg(s7::s7_cadr(args), 2),
-        ) {
-            (Ok(left), Ok(right)) => match (sync_digest(sc, left), sync_digest(sc, right)) {
-                (Ok(digest_left), Ok(digest_right)) => {
-                    let mut joined = [0 as u8; SIZE * 2];
-                    joined[..SIZE].copy_from_slice(&digest_left);
-                    joined[SIZE..].copy_from_slice(&digest_right);
-                    let digest = Word::from(Sha256::digest(joined));
-
-                    match persistor.branch_set(left, right, digest) {
-                        Ok(pair) => s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(pair)),
-                        Err(_) => sync_error(sc, "Journal is unable to add pair node (sync-cons)"),
+            let handle_arg = |obj, number| {
+                if sync_is_node(obj) {
+                    Ok(sync_heap_read(s7::s7_c_object_value(obj)))
+                } else if s7::s7_is_byte_vector(obj) {
+                    let mut content = vec![];
+                    for i in 0..s7::s7_vector_length(obj) {
+                        content.push(s7::s7_byte_vector_ref(obj, i as i64))
                     }
+                    match persistor.leaf_set(content) {
+                        Ok(atom) => Ok(atom),
+                        Err(_) => Err(sync_error(
+                            sc,
+                            "Journal is unable to add leaf node (sync-cons)",
+                        )),
+                    }
+                } else {
+                    Err(s7::s7_wrong_type_arg_error(
+                        sc,
+                        c"sync-cons".as_ptr(),
+                        number,
+                        obj,
+                        c"a byte vector or a sync node".as_ptr(),
+                    ))
                 }
-                _ => sync_error(sc, "Journal is unable to obtain node digests (sync-cons)"),
-            },
-            (Err(left), _) => left,
-            (_, Err(right)) => right,
+            };
+
+            match (
+                handle_arg(s7::s7_car(args), 1),
+                handle_arg(s7::s7_cadr(args), 2),
+            ) {
+                (Ok(left), Ok(right)) => match (sync_digest(sc, left), sync_digest(sc, right)) {
+                    (Ok(digest_left), Ok(digest_right)) => {
+                        let mut joined = [0 as u8; SIZE * 2];
+                        joined[..SIZE].copy_from_slice(&digest_left);
+                        joined[SIZE..].copy_from_slice(&digest_right);
+                        let digest = Word::from(Sha256::digest(joined));
+
+                        match persistor.branch_set(left, right, digest) {
+                            Ok(pair) => {
+                                s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(pair))
+                            }
+                            Err(_) => {
+                                sync_error(sc, "Journal is unable to add pair node (sync-cons)")
+                            }
+                        }
+                    }
+                    _ => sync_error(sc, "Journal is unable to obtain node digests (sync-cons)"),
+                },
+                (Err(left), _) => left,
+                (_, Err(right)) => right,
+            }
         }
     }
 
@@ -832,16 +856,18 @@ fn primitive_s7_sync_cons() -> Primitive {
 
 fn primitive_s7_sync_car() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        if !sync_is_node(s7::s7_car(args)) {
-            return s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-car".as_ptr(),
-                1,
-                s7::s7_car(args),
-                c"a sync-pair".as_ptr(),
-            );
+        unsafe {
+            if !sync_is_node(s7::s7_car(args)) {
+                return s7::s7_wrong_type_arg_error(
+                    sc,
+                    c"sync-car".as_ptr(),
+                    1,
+                    s7::s7_car(args),
+                    c"a sync-pair".as_ptr(),
+                );
+            }
+            sync_cxr(sc, args, c"sync-car", |children| children.0)
         }
-        sync_cxr(sc, args, c"sync-car", |children| children.0)
     }
 
     Primitive::new(
@@ -856,16 +882,18 @@ fn primitive_s7_sync_car() -> Primitive {
 
 fn primitive_s7_sync_cdr() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        if !sync_is_node(s7::s7_car(args)) {
-            return s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-cdr".as_ptr(),
-                1,
-                s7::s7_car(args),
-                c"a sync-pair".as_ptr(),
-            );
+        unsafe {
+            if !sync_is_node(s7::s7_car(args)) {
+                return s7::s7_wrong_type_arg_error(
+                    sc,
+                    c"sync-cdr".as_ptr(),
+                    1,
+                    s7::s7_car(args),
+                    c"a sync-pair".as_ptr(),
+                );
+            }
+            sync_cxr(sc, args, c"sync-cdr", |children| children.1)
         }
-        sync_cxr(sc, args, c"sync-cdr", |children| children.1)
     }
 
     Primitive::new(
@@ -880,42 +908,44 @@ fn primitive_s7_sync_cdr() -> Primitive {
 
 fn primitive_s7_sync_cut() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let arg = s7::s7_car(args);
+        unsafe {
+            let arg = s7::s7_car(args);
 
-        let handle_digest = |digest| {
-            let persistor = {
-                let session = SESSIONS.lock().expect("Failed to acquire SESSIONS lock");
-                &session
-                    .get(&(sc as usize))
-                    .expect("Session not found for given context")
-                    .persistor
-                    .clone()
+            let handle_digest = |digest| {
+                let persistor = {
+                    let session = SESSIONS.lock().expect("Failed to acquire SESSIONS lock");
+                    &session
+                        .get(&(sc as usize))
+                        .expect("Session not found for given context")
+                        .persistor
+                        .clone()
+                };
+                match persistor.stump_set(digest) {
+                    Ok(stump) => s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(stump)),
+                    Err(_) => sync_error(sc, "Journal is unable to add stub node (sync-cut)"),
+                }
             };
-            match persistor.stump_set(digest) {
-                Ok(stump) => s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(stump)),
-                Err(_) => sync_error(sc, "Journal is unable to add stub node (sync-cut)"),
-            }
-        };
 
-        if s7::s7_is_byte_vector(arg) {
-            let mut content = vec![];
-            for i in 0..s7::s7_vector_length(arg) {
-                content.push(s7::s7_byte_vector_ref(arg, i as i64))
+            if s7::s7_is_byte_vector(arg) {
+                let mut content = vec![];
+                for i in 0..s7::s7_vector_length(arg) {
+                    content.push(s7::s7_byte_vector_ref(arg, i as i64))
+                }
+                handle_digest(Word::from(Sha256::digest(Sha256::digest(&content))))
+            } else if sync_is_node(arg) {
+                match sync_digest(sc, sync_heap_read(s7::s7_c_object_value(arg))) {
+                    Ok(digest) => handle_digest(digest),
+                    Err(_) => sync_error(sc, "Journal does not recognize input node (sync-cut)"),
+                }
+            } else {
+                s7::s7_wrong_type_arg_error(
+                    sc,
+                    c"sync-cut".as_ptr(),
+                    1,
+                    s7::s7_car(args),
+                    c"a sync-node or byte-vector".as_ptr(),
+                )
             }
-            handle_digest(Word::from(Sha256::digest(Sha256::digest(&content))))
-        } else if sync_is_node(arg) {
-            match sync_digest(sc, sync_heap_read(s7::s7_c_object_value(arg))) {
-                Ok(digest) => handle_digest(digest),
-                Err(_) => sync_error(sc, "Journal does not recognize input node (sync-cut)"),
-            }
-        } else {
-            s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-cut".as_ptr(),
-                1,
-                s7::s7_car(args),
-                c"a sync-node or byte-vector".as_ptr(),
-            )
         }
     }
 
@@ -931,48 +961,50 @@ fn primitive_s7_sync_cut() -> Primitive {
 
 fn primitive_s7_sync_create() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let id = s7::s7_car(args);
+        unsafe {
+            let id = s7::s7_car(args);
 
-        if !s7::s7_is_byte_vector(id) || s7::s7_vector_length(id) as usize != SIZE {
-            return s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-create".as_ptr(),
-                1,
-                id,
-                c"a hash-sized byte-vector".as_ptr(),
-            );
-        }
-
-        let mut record: Word = [0 as u8; SIZE];
-
-        for i in 0..SIZE {
-            record[i as usize] = s7::s7_byte_vector_ref(id, i as i64)
-        }
-
-        debug!("Adding record: {}", hex::encode(record));
-
-        match PERSISTOR.root_new(
-            record,
-            PERSISTOR
-                .branch_set(
-                    PERSISTOR
-                        .leaf_set(GENESIS_STR.as_bytes().to_vec())
-                        .expect("Failed to create genesis leaf for new record"),
-                    NULL,
-                    NULL,
-                )
-                .expect("Failed to create genesis branch for new record"),
-        ) {
-            Ok(_) => s7::s7_make_boolean(sc, true),
-            Err(_) => s7::s7_error(
-                sc,
-                s7::s7_make_symbol(sc, c"sync-web-error".as_ptr()),
-                s7::s7_list(
+            if !s7::s7_is_byte_vector(id) || s7::s7_vector_length(id) as usize != SIZE {
+                return s7::s7_wrong_type_arg_error(
                     sc,
+                    c"sync-create".as_ptr(),
                     1,
-                    s7::s7_make_string(sc, c"record ID is already in use".as_ptr()),
+                    id,
+                    c"a hash-sized byte-vector".as_ptr(),
+                );
+            }
+
+            let mut record: Word = [0 as u8; SIZE];
+
+            for i in 0..SIZE {
+                record[i as usize] = s7::s7_byte_vector_ref(id, i as i64)
+            }
+
+            debug!("Adding record: {}", hex::encode(record));
+
+            match PERSISTOR.root_new(
+                record,
+                PERSISTOR
+                    .branch_set(
+                        PERSISTOR
+                            .leaf_set(GENESIS_STR.as_bytes().to_vec())
+                            .expect("Failed to create genesis leaf for new record"),
+                        NULL,
+                        NULL,
+                    )
+                    .expect("Failed to create genesis branch for new record"),
+            ) {
+                Ok(_) => s7::s7_make_boolean(sc, true),
+                Err(_) => s7::s7_error(
+                    sc,
+                    s7::s7_make_symbol(sc, c"sync-web-error".as_ptr()),
+                    s7::s7_list(
+                        sc,
+                        1,
+                        s7::s7_make_string(sc, c"record ID is already in use".as_ptr()),
+                    ),
                 ),
-            ),
+            }
         }
     }
 
@@ -988,49 +1020,51 @@ fn primitive_s7_sync_create() -> Primitive {
 
 fn primitive_s7_sync_delete() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let id = s7::s7_car(args);
+        unsafe {
+            let id = s7::s7_car(args);
 
-        if !s7::s7_is_byte_vector(id) || s7::s7_vector_length(id) as usize != SIZE {
-            return s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-delete".as_ptr(),
-                1,
-                id,
-                c"a hash-sized byte-vector".as_ptr(),
-            );
-        }
-
-        let mut record: Word = [0 as u8; SIZE];
-
-        for i in 0..s7::s7_vector_length(id) {
-            record[i as usize] = s7::s7_byte_vector_ref(id, i as i64)
-        }
-
-        if record == NULL {
-            return s7::s7_error(
-                sc,
-                s7::s7_make_symbol(sc, c"sync-web-error".as_ptr()),
-                s7::s7_list(
+            if !s7::s7_is_byte_vector(id) || s7::s7_vector_length(id) as usize != SIZE {
+                return s7::s7_wrong_type_arg_error(
                     sc,
+                    c"sync-delete".as_ptr(),
                     1,
-                    s7::s7_make_string(sc, c"cannot delete the root record".as_ptr()),
-                ),
-            );
-        }
+                    id,
+                    c"a hash-sized byte-vector".as_ptr(),
+                );
+            }
 
-        debug!("Deleting record: {}", hex::encode(record));
+            let mut record: Word = [0 as u8; SIZE];
 
-        match PERSISTOR.root_delete(record) {
-            Ok(_) => s7::s7_make_boolean(sc, true),
-            Err(_) => s7::s7_error(
-                sc,
-                s7::s7_make_symbol(sc, c"sync-web-error".as_ptr()),
-                s7::s7_list(
+            for i in 0..s7::s7_vector_length(id) {
+                record[i as usize] = s7::s7_byte_vector_ref(id, i as i64)
+            }
+
+            if record == NULL {
+                return s7::s7_error(
                     sc,
-                    1,
-                    s7::s7_make_string(sc, c"record ID does not exist".as_ptr()),
+                    s7::s7_make_symbol(sc, c"sync-web-error".as_ptr()),
+                    s7::s7_list(
+                        sc,
+                        1,
+                        s7::s7_make_string(sc, c"cannot delete the root record".as_ptr()),
+                    ),
+                );
+            }
+
+            debug!("Deleting record: {}", hex::encode(record));
+
+            match PERSISTOR.root_delete(record) {
+                Ok(_) => s7::s7_make_boolean(sc, true),
+                Err(_) => s7::s7_error(
+                    sc,
+                    s7::s7_make_symbol(sc, c"sync-web-error".as_ptr()),
+                    s7::s7_list(
+                        sc,
+                        1,
+                        s7::s7_make_string(sc, c"record ID does not exist".as_ptr()),
+                    ),
                 ),
-            ),
+            }
         }
     }
 
@@ -1046,18 +1080,20 @@ fn primitive_s7_sync_delete() -> Primitive {
 
 fn primitive_s7_sync_all() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, _args: s7::s7_pointer) -> s7::s7_pointer {
-        let mut list = s7::s7_list(sc, 0);
+        unsafe {
+            let mut list = s7::s7_list(sc, 0);
 
-        for record in PERSISTOR.root_list().into_iter().rev() {
-            let bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
-            for i in 0..SIZE {
-                s7::s7_byte_vector_set(bv, i as i64, record[i]);
+            for record in PERSISTOR.root_list().into_iter().rev() {
+                let bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
+                for i in 0..SIZE {
+                    s7::s7_byte_vector_set(bv, i as i64, record[i]);
+                }
+
+                list = s7::s7_cons(sc, bv, list)
             }
 
-            list = s7::s7_cons(sc, bv, list)
+            list
         }
-
-        list
     }
 
     Primitive::new(
@@ -1072,72 +1108,74 @@ fn primitive_s7_sync_all() -> Primitive {
 
 fn primitive_s7_sync_call() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let message_expr = s7::s7_car(args);
-        let blocking = s7::s7_cadr(args);
+        unsafe {
+            let message_expr = s7::s7_car(args);
+            let blocking = s7::s7_cadr(args);
 
-        if !s7::s7_is_boolean(blocking) {
-            return s7::s7_wrong_type_arg_error(
-                sc,
-                c"sync-call".as_ptr(),
-                2,
-                blocking,
-                c"a boolean".as_ptr(),
-            );
-        }
-
-        let record = match s7::s7_is_null(sc, s7::s7_cddr(args)) {
-            true => {
-                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-                session
-                    .get(&(sc as usize))
-                    .expect("Session number not found in sessions map")
-                    .record
-            }
-            false => {
-                let bv = s7::s7_caddr(args);
-                // check the input arguments
-                if !s7::s7_is_byte_vector(bv) || s7::s7_vector_length(bv) as usize != SIZE {
-                    return s7::s7_wrong_type_arg_error(
-                        sc,
-                        c"sync-call".as_ptr(),
-                        3,
-                        bv,
-                        c"a hash-sized byte-vector".as_ptr(),
-                    );
-                }
-
-                let mut record = [0 as u8; SIZE];
-                for i in 0..SIZE {
-                    record[i] = s7::s7_byte_vector_ref(bv, i as i64);
-                }
-                record
-            }
-        };
-
-        match PERSISTOR.root_get(record) {
-            Ok(_) => {
-                let message = obj2str(sc, message_expr);
-                if s7::s7_boolean(sc, blocking) {
-                    let result = JOURNAL.evaluate_record(record, message.as_str());
-                    let c_result = CString::new(format!("(quote {})", result))
-                        .expect("Failed to create C string from journal evaluation result");
-                    s7::s7_eval_c_string(sc, c_result.as_ptr())
-                } else {
-                    tokio::spawn(async move {
-                        JOURNAL.evaluate_record(record, message.as_str());
-                    });
-                    s7::s7_make_boolean(sc, true)
-                }
-            }
-            Err(_) => s7::s7_error(
-                sc,
-                s7::s7_make_symbol(sc, c"sync-web-error".as_ptr()),
-                s7::s7_list(
+            if !s7::s7_is_boolean(blocking) {
+                return s7::s7_wrong_type_arg_error(
                     sc,
-                    1,
-                    s7::s7_make_string(sc, c"record ID does not exist".as_ptr()),
+                    c"sync-call".as_ptr(),
+                    2,
+                    blocking,
+                    c"a boolean".as_ptr(),
+                );
+            }
+
+            let record = match s7::s7_is_null(sc, s7::s7_cddr(args)) {
+                true => {
+                    let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                    session
+                        .get(&(sc as usize))
+                        .expect("Session number not found in sessions map")
+                        .record
+                }
+                false => {
+                    let bv = s7::s7_caddr(args);
+                    // check the input arguments
+                    if !s7::s7_is_byte_vector(bv) || s7::s7_vector_length(bv) as usize != SIZE {
+                        return s7::s7_wrong_type_arg_error(
+                            sc,
+                            c"sync-call".as_ptr(),
+                            3,
+                            bv,
+                            c"a hash-sized byte-vector".as_ptr(),
+                        );
+                    }
+
+                    let mut record = [0 as u8; SIZE];
+                    for i in 0..SIZE {
+                        record[i] = s7::s7_byte_vector_ref(bv, i as i64);
+                    }
+                    record
+                }
+            };
+
+            match PERSISTOR.root_get(record) {
+                Ok(_) => {
+                    let message = obj2str(sc, message_expr);
+                    if s7::s7_boolean(sc, blocking) {
+                        let result = JOURNAL.evaluate_record(record, message.as_str());
+                        let c_result = CString::new(format!("(quote {})", result))
+                            .expect("Failed to create C string from journal evaluation result");
+                        s7::s7_eval_c_string(sc, c_result.as_ptr())
+                    } else {
+                        tokio::spawn(async move {
+                            JOURNAL.evaluate_record(record, message.as_str());
+                        });
+                        s7::s7_make_boolean(sc, true)
+                    }
+                }
+                Err(_) => s7::s7_error(
+                    sc,
+                    s7::s7_make_symbol(sc, c"sync-web-error".as_ptr()),
+                    s7::s7_list(
+                        sc,
+                        1,
+                        s7::s7_make_string(sc, c"record ID does not exist".as_ptr()),
+                    ),
                 ),
-            ),
+            }
         }
     }
 
@@ -1153,80 +1191,82 @@ fn primitive_s7_sync_call() -> Primitive {
 
 fn primitive_s7_sync_http() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let vec2s7 = |vector: Vec<u8>| {
-            let bv = s7::s7_make_byte_vector(sc, vector.len() as i64, 1, std::ptr::null_mut());
-            for i in 0..vector.len() {
-                s7::s7_byte_vector_set(bv, i as i64, vector[i]);
-            }
-            bv
-        };
+        unsafe {
+            let vec2s7 = |vector: Vec<u8>| {
+                let bv = s7::s7_make_byte_vector(sc, vector.len() as i64, 1, std::ptr::null_mut());
+                for i in 0..vector.len() {
+                    s7::s7_byte_vector_set(bv, i as i64, vector[i]);
+                }
+                bv
+            };
 
-        let method = obj2str(sc, s7::s7_car(args));
-        let url = obj2str(sc, s7::s7_cadr(args));
+            let method = obj2str(sc, s7::s7_car(args));
+            let url = obj2str(sc, s7::s7_cadr(args));
 
-        let body = if s7::s7_list_length(sc, args) >= 3 {
-            obj2str(sc, s7::s7_caddr(args))
-        } else {
-            String::from("")
-        };
+            let body = if s7::s7_list_length(sc, args) >= 3 {
+                obj2str(sc, s7::s7_caddr(args))
+            } else {
+                String::from("")
+            };
 
-        let cache_mutex = {
-            let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-            &session
-                .get(&(sc as usize))
-                .expect("Session ID not found in active sessions")
-                .cache
-                .clone()
-        };
+            let cache_mutex = {
+                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                &session
+                    .get(&(sc as usize))
+                    .expect("Session ID not found in active sessions")
+                    .cache
+                    .clone()
+            };
 
-        let mut cache = cache_mutex
-            .lock()
-            .expect("Failed to acquire cache mutex lock");
+            let mut cache = cache_mutex
+                .lock()
+                .expect("Failed to acquire cache mutex lock");
 
-        let key = (method.clone(), url.clone(), body.as_bytes().to_vec());
+            let key = (method.clone(), url.clone(), body.as_bytes().to_vec());
 
-        match cache.get(&key) {
-            Some(bytes) => {
-                debug!("Cache hit on key {:?}", key);
-                vec2s7(bytes.to_vec())
-            }
-            None => {
-                let result = tokio::task::block_in_place(move || {
-                    tokio::runtime::Handle::current().block_on(async move {
-                        match method.to_lowercase() {
-                            method if method == "get" => {
-                                JOURNAL
-                                    .client
-                                    .get(&url[1..url.len() - 1])
-                                    .send()
-                                    .await?
-                                    .bytes()
-                                    .await
+            match cache.get(&key) {
+                Some(bytes) => {
+                    debug!("Cache hit on key {:?}", key);
+                    vec2s7(bytes.to_vec())
+                }
+                None => {
+                    let result = tokio::task::block_in_place(move || {
+                        tokio::runtime::Handle::current().block_on(async move {
+                            match method.to_lowercase() {
+                                method if method == "get" => {
+                                    JOURNAL
+                                        .client
+                                        .get(&url[1..url.len() - 1])
+                                        .send()
+                                        .await?
+                                        .bytes()
+                                        .await
+                                }
+                                method if method == "post" => {
+                                    JOURNAL
+                                        .client
+                                        .post(&url[1..url.len() - 1])
+                                        .body(String::from(&body[1..body.len() - 1]))
+                                        .send()
+                                        .await?
+                                        .bytes()
+                                        .await
+                                }
+                                _ => {
+                                    panic!("Unsupported HTTP method")
+                                }
                             }
-                            method if method == "post" => {
-                                JOURNAL
-                                    .client
-                                    .post(&url[1..url.len() - 1])
-                                    .body(String::from(&body[1..body.len() - 1]))
-                                    .send()
-                                    .await?
-                                    .bytes()
-                                    .await
-                            }
-                            _ => {
-                                panic!("Unsupported HTTP method")
-                            }
+                        })
+                    });
+
+                    match result {
+                        Ok(vector) => {
+                            cache.insert(key, vector.to_vec());
+                            vec2s7(vector.to_vec())
                         }
-                    })
-                });
-
-                match result {
-                    Ok(vector) => {
-                        cache.insert(key, vector.to_vec());
-                        vec2s7(vector.to_vec())
-                    }
-                    Err(_) => {
-                        sync_error(sc, "Journal is unable to fulfill HTTP request (sync-http)")
+                        Err(_) => {
+                            sync_error(sc, "Journal is unable to fulfill HTTP request (sync-http)")
+                        }
                     }
                 }
             }
@@ -1245,57 +1285,59 @@ fn primitive_s7_sync_http() -> Primitive {
 
 fn primitive_s7_sync_remote() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
-        let vec2s7 = |mut vector: Vec<u8>| {
-            vector.insert(0, 39); // add quote character so that it evaluates correctly
-            vector.push(0);
-            let c_string =
-                CString::from_vec_with_nul(vector).expect("Failed to create C string from vector");
-            s7::s7_eval_c_string(sc, c_string.as_ptr())
-        };
+        unsafe {
+            let vec2s7 = |mut vector: Vec<u8>| {
+                vector.insert(0, 39); // add quote character so that it evaluates correctly
+                vector.push(0);
+                let c_string = CString::from_vec_with_nul(vector)
+                    .expect("Failed to create C string from vector");
+                s7::s7_eval_c_string(sc, c_string.as_ptr())
+            };
 
-        let url = obj2str(sc, s7::s7_car(args));
+            let url = obj2str(sc, s7::s7_car(args));
 
-        let body = obj2str(sc, s7::s7_cadr(args));
+            let body = obj2str(sc, s7::s7_cadr(args));
 
-        let cache_mutex = {
-            let session = SESSIONS.lock().expect("Failed to acquire session lock");
-            &session
-                .get(&(sc as usize))
-                .expect("Failed to get session from map")
-                .cache
-                .clone()
-        };
+            let cache_mutex = {
+                let session = SESSIONS.lock().expect("Failed to acquire session lock");
+                &session
+                    .get(&(sc as usize))
+                    .expect("Failed to get session from map")
+                    .cache
+                    .clone()
+            };
 
-        let mut cache = cache_mutex.lock().expect("Failed to acquire cache lock");
+            let mut cache = cache_mutex.lock().expect("Failed to acquire cache lock");
 
-        let key = (String::from("post"), url.clone(), body.as_bytes().to_vec());
+            let key = (String::from("post"), url.clone(), body.as_bytes().to_vec());
 
-        match cache.get(&key) {
-            Some(bytes) => {
-                debug!("Cache hit on key {:?}", key);
-                vec2s7(bytes.to_vec())
-            }
-            None => {
-                let result = tokio::task::block_in_place(move || {
-                    tokio::runtime::Handle::current().block_on(async move {
-                        JOURNAL
-                            .client
-                            .post(&url[1..url.len() - 1])
-                            .body(body)
-                            .send()
-                            .await?
-                            .bytes()
-                            .await
-                    })
-                });
+            match cache.get(&key) {
+                Some(bytes) => {
+                    debug!("Cache hit on key {:?}", key);
+                    vec2s7(bytes.to_vec())
+                }
+                None => {
+                    let result = tokio::task::block_in_place(move || {
+                        tokio::runtime::Handle::current().block_on(async move {
+                            JOURNAL
+                                .client
+                                .post(&url[1..url.len() - 1])
+                                .body(body)
+                                .send()
+                                .await?
+                                .bytes()
+                                .await
+                        })
+                    });
 
-                match result {
-                    Ok(bytes) => {
-                        cache.insert(key, bytes.to_vec());
-                        vec2s7(bytes.to_vec())
-                    }
-                    Err(_) => {
-                        sync_error(sc, "Journal is unable to query remote peer (sync-remote)")
+                    match result {
+                        Ok(bytes) => {
+                            cache.insert(key, bytes.to_vec());
+                            vec2s7(bytes.to_vec())
+                        }
+                        Err(_) => {
+                            sync_error(sc, "Journal is unable to query remote peer (sync-remote)")
+                        }
                     }
                 }
             }
@@ -1312,32 +1354,40 @@ fn primitive_s7_sync_remote() -> Primitive {
     )
 }
 unsafe fn string_to_s7(sc: *mut s7::s7_scheme, string: &str) -> s7::s7_pointer {
-    let c_string = CString::new(string).expect("Failed to create CString from string");
-    let s7_string = s7::s7_make_string(sc, c_string.as_ptr());
-    s7::s7_object_to_string(sc, s7_string, false)
+    unsafe {
+        let c_string = CString::new(string).expect("Failed to create CString from string");
+        let s7_string = s7::s7_make_string(sc, c_string.as_ptr());
+        s7::s7_object_to_string(sc, s7_string, false)
+    }
 }
 
 unsafe fn sync_heap_make(word: Word) -> *mut libc::c_void {
-    let ptr = libc::malloc(SIZE);
-    let array: &mut [u8] = std::slice::from_raw_parts_mut(ptr as *mut u8, SIZE);
-    for i in 0..SIZE {
-        array[i] = word[i] as u8;
+    unsafe {
+        let ptr = libc::malloc(SIZE);
+        let array: &mut [u8] = std::slice::from_raw_parts_mut(ptr as *mut u8, SIZE);
+        for i in 0..SIZE {
+            array[i] = word[i] as u8;
+        }
+        ptr
     }
-    ptr
 }
 
 unsafe fn sync_heap_read(ptr: *mut libc::c_void) -> Word {
-    std::slice::from_raw_parts_mut(ptr as *mut u8, SIZE)
-        .try_into()
-        .expect("Failed to convert slice to Word array")
+    unsafe {
+        std::slice::from_raw_parts_mut(ptr as *mut u8, SIZE)
+            .try_into()
+            .expect("Failed to convert slice to Word array")
+    }
 }
 
 unsafe fn sync_heap_free(ptr: *mut libc::c_void) {
-    libc::free(ptr);
+    unsafe {
+        libc::free(ptr);
+    }
 }
 
 unsafe fn sync_is_node(obj: s7::s7_pointer) -> bool {
-    s7::s7_is_c_object(obj) && s7::s7_c_object_type(obj) == SYNC_NODE_TAG
+    unsafe { s7::s7_is_c_object(obj) && s7::s7_c_object_type(obj) == SYNC_NODE_TAG }
 }
 
 unsafe fn sync_cxr(
@@ -1346,71 +1396,75 @@ unsafe fn sync_cxr(
     name: &CStr,
     selector: fn((Word, Word)) -> Word,
 ) -> s7::s7_pointer {
-    let node = s7::s7_car(args);
-    let word = sync_heap_read(s7::s7_c_object_value(node));
+    unsafe {
+        let node = s7::s7_car(args);
+        let word = sync_heap_read(s7::s7_c_object_value(node));
 
-    let persistor = {
-        let session = SESSIONS.lock().expect("Failed to acquire SESSIONS lock");
-        &session
-            .get(&(sc as usize))
-            .expect("Session not found for given context")
-            .persistor
-            .clone()
-    };
-
-    let child_return = |word| {
-        let node_return = |word| s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(word));
-
-        let vector_return = |vector: Vec<u8>| {
-            let bv = s7::s7_make_byte_vector(sc, vector.len() as i64, 1, std::ptr::null_mut());
-            for i in 0..vector.len() {
-                s7::s7_byte_vector_set(bv, i as i64, vector[i]);
-            }
-            bv
+        let persistor = {
+            let session = SESSIONS.lock().expect("Failed to acquire SESSIONS lock");
+            &session
+                .get(&(sc as usize))
+                .expect("Session not found for given context")
+                .persistor
+                .clone()
         };
 
-        if word == NULL {
-            node_return(word)
-        } else if let Ok(_) = persistor.branch_get(word) {
-            node_return(word)
-        } else if let Ok(_) = PERSISTOR.branch_get(word) {
-            node_return(word)
-        } else if let Ok(content) = persistor.leaf_get(word) {
-            vector_return(content)
-        } else if let Ok(content) = PERSISTOR.leaf_get(word) {
-            vector_return(content)
-        } else if let Ok(_) = persistor.stump_get(word) {
-            node_return(word)
-        } else if let Ok(_) = PERSISTOR.stump_get(word) {
-            node_return(word)
-        } else {
-            sync_error(
-                sc,
-                format!(
-                    "Cannot retrieve items for node that is not a sync-pair ({})",
-                    name.to_string_lossy()
-                )
-                .as_str(),
-            )
-        }
-    };
+        let child_return = |word| {
+            let node_return = |word| s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(word));
 
-    match sync_is_node(node) {
-        true => match persistor.branch_get(word) {
-            Ok((left, right, _)) => child_return(selector((left, right))),
-            Err(_) => match PERSISTOR.branch_get(word) {
-                Ok((left, right, _)) => child_return(selector((left, right))),
-                Err(_) => sync_error(
+            let vector_return = |vector: Vec<u8>| {
+                let bv = s7::s7_make_byte_vector(sc, vector.len() as i64, 1, std::ptr::null_mut());
+                for i in 0..vector.len() {
+                    s7::s7_byte_vector_set(bv, i as i64, vector[i]);
+                }
+                bv
+            };
+
+            if word == NULL {
+                node_return(word)
+            } else if let Ok(_) = persistor.branch_get(word) {
+                node_return(word)
+            } else if let Ok(_) = PERSISTOR.branch_get(word) {
+                node_return(word)
+            } else if let Ok(content) = persistor.leaf_get(word) {
+                vector_return(content)
+            } else if let Ok(content) = PERSISTOR.leaf_get(word) {
+                vector_return(content)
+            } else if let Ok(_) = persistor.stump_get(word) {
+                node_return(word)
+            } else if let Ok(_) = PERSISTOR.stump_get(word) {
+                node_return(word)
+            } else {
+                sync_error(
                     sc,
                     format!(
-                        "Journal cannot retrieve leaf byte-vector ({})",
+                        "Cannot retrieve items for node that is not a sync-pair ({})",
                         name.to_string_lossy()
                     )
                     .as_str(),
-                ),
+                )
+            }
+        };
+
+        match sync_is_node(node) {
+            true => match persistor.branch_get(word) {
+                Ok((left, right, _)) => child_return(selector((left, right))),
+                Err(_) => match PERSISTOR.branch_get(word) {
+                    Ok((left, right, _)) => child_return(selector((left, right))),
+                    Err(_) => sync_error(
+                        sc,
+                        format!(
+                            "Journal cannot retrieve leaf byte-vector ({})",
+                            name.to_string_lossy()
+                        )
+                        .as_str(),
+                    ),
+                },
             },
-        },
-        false => s7::s7_wrong_type_arg_error(sc, name.as_ptr(), 1, node, c"a sync-node".as_ptr()),
+            false => {
+                s7::s7_wrong_type_arg_error(sc, name.as_ptr(), 1, node, c"a sync-node".as_ptr())
+            }
+        }
     }
 }
 
