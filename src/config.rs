@@ -30,10 +30,10 @@ pub struct Config {
     #[arg(
         short = 'c',
         long,
-        default_value_t = 0,
-        help = "Power of two determining the period of the step query"
+        default_value_t = 0.0,
+        help = "Number of seconds between each step inquiry"
     )]
-    pub periodicity: i32,
+    pub period: f64,
 }
 
 impl Config {
