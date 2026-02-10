@@ -117,8 +117,6 @@ async fn main() {
     rocket_config.address = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0));
     rocket_config.limits = Limits::new().limit("string", 1_i32.mebibytes());
 
-    let period = 2_f64.powi(config.periodicity);
-
     if config.step != "" {
         tokio::spawn(async move {
             let mut step = 0;
@@ -126,12 +124,12 @@ async fn main() {
                 .duration_since(UNIX_EPOCH)
                 .expect("Failed to get system time")
                 .as_micros() as f64
-                / (period * MICRO))
+                / (config.period * MICRO))
                 .ceil()
-                * (period * MICRO)) as u128;
+                * (config.period * MICRO)) as u128;
 
             loop {
-                let until = start + step * (period * MICRO) as u128;
+                let until = start + step * (config.period * MICRO) as u128;
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .expect("Failed to get system time")
