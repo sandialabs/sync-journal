@@ -76,16 +76,13 @@ impl Type {
 
 pub fn obj2str(sc: *mut s7_scheme, obj: *mut s7_cell) -> String {
     unsafe {
-        unsafe {
-            let expr = s7_object_to_c_string(sc, obj);
-            let cstr = CStr::from_ptr(expr);
-            let result = match cstr.to_str() {
-                Ok(expr) => expr.to_owned(),
-                Err(_) => format!("(error 'encoding-error \"Failed to encode string\")"),
-            };
-            free(expr as *mut libc::c_void);
-            result
-        }
+        let expr = s7_string(s7_object_to_string(sc, obj, false));
+        let cstr = CStr::from_ptr(expr);
+        let result = match cstr.to_str() {
+            Ok(expr) => expr.to_owned(),
+            Err(_) => format!("(error 'encoding-error \"Failed to encode string\")"),
+        };
+        result
     }
 }
 
@@ -108,24 +105,21 @@ pub fn scheme2json(expression: &str) -> Result<Value, String> {
     // - @hash-table: {"*type/hash-table*": [["a", 6], [53, 199]]}
 
     unsafe {
-        unsafe {
-            let sc: *mut s7_scheme = s7_init();
+        let sc: *mut s7_scheme = s7_init();
 
-            // Parse the expression without evaluating it
-            let c_expr = CString::new(expression).unwrap_or_else(|_| CString::new("()").unwrap());
-            let input_port = s7_open_input_string(sc, c_expr.as_ptr());
-            let s7_obj = s7_read(sc, input_port);
-            s7_close_input_port(sc, input_port);
+        // Parse the expression without evaluating it
+        let c_expr = CString::new(expression).unwrap_or_else(|_| CString::new("()").unwrap());
+        let input_port = s7_open_input_string(sc, c_expr.as_ptr());
+        let s7_obj = s7_read(sc, input_port);
+        s7_close_input_port(sc, input_port);
 
-            let result = s7_obj_to_json(sc, s7_obj);
-            s7_free(sc);
-            result
-        }
+        let result = s7_obj_to_json(sc, s7_obj);
+        s7_free(sc);
+        result
     }
 }
 
 pub fn json2scheme(expression: Value) -> Result<String, String> {
-    unsafe {
         unsafe {
             let sc: *mut s7_scheme = s7_init();
             match json_to_s7_obj(sc, &expression) {
@@ -139,7 +133,6 @@ pub fn json2scheme(expression: Value) -> Result<String, String> {
                     Err(err)
                 }
             }
-        }
     }
 }
 
@@ -162,7 +155,6 @@ impl Evaluator {
 
         primitives_.extend(primitives);
 
-        unsafe {
             unsafe {
                 let sc: *mut s7_scheme = s7_init();
 
@@ -209,7 +201,6 @@ impl Evaluator {
                     sc,
                     primitives: primitives_,
                 }
-            }
         }
     }
 
@@ -232,11 +223,9 @@ impl Evaluator {
 
 impl Drop for Evaluator {
     fn drop(&mut self) {
-        unsafe {
             unsafe {
                 s7_free(self.sc);
             }
-        }
     }
 }
 
@@ -244,7 +233,7 @@ fn primitive_expression_to_byte_vector() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7_scheme, args: s7_pointer) -> s7_pointer {
         let arg = s7_car(args);
 
-        let s7_c_str = s7_object_to_c_string(sc, arg);
+        let s7_c_str = s7_string(s7_object_to_string(sc, arg, false));
         let c_string = CStr::from_ptr(s7_c_str);
 
         let bv = s7_make_byte_vector(
@@ -256,7 +245,6 @@ fn primitive_expression_to_byte_vector() -> Primitive {
         for (i, b) in c_string.to_bytes().iter().enumerate() {
             s7_byte_vector_set(bv, i as i64, *b);
         }
-        free(s7_c_str as *mut libc::c_void);
         bv
     }
 
@@ -328,7 +316,7 @@ fn primitive_hex_string_to_byte_vector() -> Primitive {
             );
         }
 
-        let s7_c_str = s7_object_to_c_string(sc, arg);
+        let s7_c_str = s7_string(s7_object_to_string(sc, arg, false));
         let hex_string = CStr::from_ptr(s7_c_str)
             .to_str()
             .expect("Failed to convert C string to hex string");
@@ -337,8 +325,6 @@ fn primitive_hex_string_to_byte_vector() -> Primitive {
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex_string[i..i + 2], 16))
             .collect();
-
-        free(s7_c_str as *mut libc::c_void);
 
         match result {
             Ok(result) => {
