@@ -30,7 +30,7 @@ pub struct Config {
     #[arg(
         short = 'c',
         long,
-        default_value_t = 0.0,
+        default_value_t = 1.0,
         help = "Number of seconds between each step inquiry"
     )]
     pub period: f64,
