@@ -79,7 +79,10 @@ pub fn obj2str(sc: *mut s7_scheme, obj: *mut s7_cell) -> String {
         let expr = s7_string(s7_object_to_string(sc, obj, false));
         let cstr = CStr::from_ptr(expr);
         let result = match cstr.to_str() {
-            Ok(expr) => expr.to_owned(),
+            Ok(rust_str) => match s7_is_string(obj) {
+                true => format!("\"{}\"", rust_str),
+                false => format!("{}", rust_str.to_owned()),
+            },
             Err(_) => format!("(error 'encoding-error \"Failed to encode string\")"),
         };
         result
@@ -120,19 +123,19 @@ pub fn scheme2json(expression: &str) -> Result<Value, String> {
 }
 
 pub fn json2scheme(expression: Value) -> Result<String, String> {
-        unsafe {
-            let sc: *mut s7_scheme = s7_init();
-            match json_to_s7_obj(sc, &expression) {
-                Ok(s7_obj) => {
-                    let result = obj2str(sc, s7_obj);
-                    s7_free(sc);
-                    Ok(result)
-                }
-                Err(err) => {
-                    s7_free(sc);
-                    Err(err)
-                }
+    unsafe {
+        let sc: *mut s7_scheme = s7_init();
+        match json_to_s7_obj(sc, &expression) {
+            Ok(s7_obj) => {
+                let result = obj2str(sc, s7_obj);
+                s7_free(sc);
+                Ok(result)
             }
+            Err(err) => {
+                s7_free(sc);
+                Err(err)
+            }
+        }
     }
 }
 
@@ -155,52 +158,52 @@ impl Evaluator {
 
         primitives_.extend(primitives);
 
-            unsafe {
-                let sc: *mut s7_scheme = s7_init();
+        unsafe {
+            let sc: *mut s7_scheme = s7_init();
 
-                // remove insecure primitives
-                for primitive in REMOVE {
-                    s7_define(
-                        sc,
-                        s7_rootlet(sc),
-                        s7_make_symbol(sc, primitive.as_ptr()),
-                        s7_make_symbol(sc, c"*removed*".as_ptr()),
-                    );
-                }
-
-                // add new types
-                for (&tag_, type_) in types.iter() {
-                    let tag = s7_make_c_type(sc, type_.name.as_ptr());
-                    assert!(tag == tag_, "Type tag was not properly set");
-                    s7_c_type_set_gc_free(sc, tag, Some(type_.free));
-                    s7_c_type_set_gc_mark(sc, tag, Some(type_.mark));
-                    s7_c_type_set_is_equal(sc, tag, Some(type_.is_equal));
-                    s7_c_type_set_to_string(sc, tag, Some(type_.to_string));
-                }
-
-                // add new primitives
-                for primitive in primitives_.iter() {
-                    s7_define_function(
-                        sc,
-                        primitive.name.as_ptr(),
-                        Some(primitive.code),
-                        primitive
-                            .args_required
-                            .try_into()
-                            .expect("args_required conversion failed"),
-                        primitive
-                            .args_optional
-                            .try_into()
-                            .expect("args_optional conversion failed"),
-                        primitive.args_rest,
-                        primitive.description.as_ptr(),
-                    );
-                }
-
-                Self {
+            // remove insecure primitives
+            for primitive in REMOVE {
+                s7_define(
                     sc,
-                    primitives: primitives_,
-                }
+                    s7_rootlet(sc),
+                    s7_make_symbol(sc, primitive.as_ptr()),
+                    s7_make_symbol(sc, c"*removed*".as_ptr()),
+                );
+            }
+
+            // add new types
+            for (&tag_, type_) in types.iter() {
+                let tag = s7_make_c_type(sc, type_.name.as_ptr());
+                assert!(tag == tag_, "Type tag was not properly set");
+                s7_c_type_set_gc_free(sc, tag, Some(type_.free));
+                s7_c_type_set_gc_mark(sc, tag, Some(type_.mark));
+                s7_c_type_set_is_equal(sc, tag, Some(type_.is_equal));
+                s7_c_type_set_to_string(sc, tag, Some(type_.to_string));
+            }
+
+            // add new primitives
+            for primitive in primitives_.iter() {
+                s7_define_function(
+                    sc,
+                    primitive.name.as_ptr(),
+                    Some(primitive.code),
+                    primitive
+                        .args_required
+                        .try_into()
+                        .expect("args_required conversion failed"),
+                    primitive
+                        .args_optional
+                        .try_into()
+                        .expect("args_optional conversion failed"),
+                    primitive.args_rest,
+                    primitive.description.as_ptr(),
+                );
+            }
+
+            Self {
+                sc,
+                primitives: primitives_,
+            }
         }
     }
 
@@ -223,9 +226,9 @@ impl Evaluator {
 
 impl Drop for Evaluator {
     fn drop(&mut self) {
-            unsafe {
-                s7_free(self.sc);
-            }
+        unsafe {
+            s7_free(self.sc);
+        }
     }
 }
 
@@ -233,16 +236,12 @@ fn primitive_expression_to_byte_vector() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7_scheme, args: s7_pointer) -> s7_pointer {
         let arg = s7_car(args);
 
-        let s7_c_str = s7_string(s7_object_to_string(sc, arg, false));
-        let c_string = CStr::from_ptr(s7_c_str);
+        // let s7_c_str = s7_string(s7_object_to_string(sc, arg, false));
+        // let c_string = CStr::from_ptr(s7_c_str);
+        let bytes = obj2str(sc, arg).into_bytes();
 
-        let bv = s7_make_byte_vector(
-            sc,
-            c_string.to_bytes().len() as i64,
-            1 as i64,
-            std::ptr::null_mut(),
-        );
-        for (i, b) in c_string.to_bytes().iter().enumerate() {
+        let bv = s7_make_byte_vector(sc, bytes.len() as i64, 1 as i64, std::ptr::null_mut());
+        for (i, b) in bytes.iter().enumerate() {
             s7_byte_vector_set(bv, i as i64, *b);
         }
         bv
@@ -321,7 +320,7 @@ fn primitive_hex_string_to_byte_vector() -> Primitive {
             .to_str()
             .expect("Failed to convert C string to hex string");
 
-        let result: Result<Vec<u8>, ParseIntError> = (1..hex_string.len() - 1)
+        let result: Result<Vec<u8>, ParseIntError> = (0..hex_string.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex_string[i..i + 2], 16))
             .collect();
@@ -513,14 +512,15 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
                 Err("Invalid floating point number - cannot convert to JSON".to_string())
             }
         } else if s7_is_string(obj) {
-            let c_str = s7_string(obj);
-            let rust_str = CStr::from_ptr(c_str).to_string_lossy();
+            // let c_str = s7_string(obj);
+            // let rust_str = CStr::from_ptr(c_str).to_string_lossy();
+            let rust_str = obj2str(sc, obj);
 
             // Check if it's a special type marker
             let mut special_type = Map::new();
             special_type.insert(
                 "*type/string*".to_string(),
-                Value::String(rust_str.to_string()),
+                Value::String(String::from(&rust_str[1..(rust_str.len() - 1)])),
             );
             Ok(Value::Object(special_type))
         } else if s7_is_symbol(obj) {
