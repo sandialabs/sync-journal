@@ -576,7 +576,7 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
                     current = s7_cdr(current);
                 }
                 Ok(Value::Object(map))
-            } else if s7_is_pair(obj) && !s7_is_pair(s7_cdr(obj)) {
+            } else if s7_is_pair(obj) && !s7_is_pair(s7_cdr(obj)) && !s7_is_null(sc, s7_cdr(obj)) {
                 // Handle pairs as special type
                 let mut special_type = Map::new();
                 let mut pair_array = Vec::new();
