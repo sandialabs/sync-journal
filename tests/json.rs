@@ -190,6 +190,12 @@ fn test_special_type_round_trip() {
     let scheme = json2lisp(&original.clone()).unwrap();
     let back_to_json = lisp2json(&scheme).unwrap();
     assert_eq!(original, back_to_json);
+
+    // Test quote special type round trip
+    let original = json!({"*type/quoted*": ["+", 2, 2]});
+    let scheme = json2lisp(&original.clone()).unwrap();
+    let back_to_json = lisp2json(&scheme).unwrap();
+    assert_eq!(original, back_to_json);
 }
 
 #[test]
@@ -289,4 +295,15 @@ fn test_quote_handling() {
     // Test number
     let json_val = lisp2json("42").unwrap();
     assert_eq!(json_val, json!(42));
+
+    // Test quoted list
+    let json_val = lisp2json("'(+ 2 2)").unwrap();
+    assert_eq!(json_val, json!({"*type/quoted*": ["+", 2, 2]}));
+
+    // Test nested quote in list
+    let json_val = lisp2json("(symbol-a 'symbol-b)").unwrap();
+    assert_eq!(
+        json_val,
+        json!(["symbol-a", {"*type/quoted*": "symbol-b"}])
+    );
 }

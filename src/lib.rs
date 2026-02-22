@@ -149,7 +149,7 @@ impl Journal {
                             "Failed to parse Scheme to JSON. Result: {}",
                             result
                         );
-                        lisp2json("(error parse-error \"Failed to parse Scheme to JSON\")")
+                        lisp2json("(error 'parse-error \"Failed to parse Scheme to JSON\")")
                     }
                         .expect("Error parsing the JSON error message"),
                 }
@@ -161,7 +161,7 @@ impl Journal {
                     "Failed to parse JSON to Scheme. Query: {}",
                     query_str
                 );
-                lisp2json("(error parse-error \"Failed to parse JSON to Scheme\")")
+                lisp2json("(error 'parse-error \"Failed to parse JSON to Scheme\")")
             }
                 .expect("Error parsing the JSON error message"),
         }
@@ -185,7 +185,7 @@ impl Journal {
                     "Failed to parse Scheme to JSON. Query: {}",
                     query
                 );
-                lisp2json("(error parse-error \"Failed to parse Scheme to JSON\")")
+                lisp2json("(error 'parse-error \"Failed to parse Scheme to JSON\")")
             }
             .expect("Error parsing the JSON error message"),
         }
@@ -211,7 +211,7 @@ impl Journal {
                     "Failed to parse JSON to Scheme. Query: {}",
                     query_str
                 );
-                "(error parse-error \"Failed to parse JSON to Scheme\")".to_string()
+                "(error 'parse-error \"Failed to parse JSON to Scheme\")".to_string()
             }
         }
     }

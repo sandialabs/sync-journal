@@ -106,12 +106,31 @@ pub fn lisp2json(expression: &str) -> Result<Value, String> {
     // - @byte-vector: {"*type/byte-vector*: "deadbeef0000" }
     // - @float-vector: {"*type/float-vector*": [3.2, 8.6, 0.1]}
     // - @hash-table: {"*type/hash-table*": [["a", 6], [53, 199]]}
+    // - @quoted: {"*type/quoted*": [["a", 6], [53, 199]]}
+
+    let mut owned_expr = None;
+    let expr = {
+        let trimmed = expression.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('\'') {
+            let rest = rest.trim_start();
+            if rest.is_empty() {
+                return Err("Empty quoted expression".to_string());
+            }
+            let mut wrapped = String::from("(quote ");
+            wrapped.push_str(rest);
+            wrapped.push(')');
+            owned_expr = Some(wrapped);
+            owned_expr.as_deref().expect("quote wrapper missing")
+        } else {
+            expression
+        }
+    };
 
     unsafe {
         let sc: *mut s7_scheme = s7_init();
 
         // Parse the expression without evaluating it
-        let c_expr = CString::new(expression).unwrap_or_else(|_| CString::new("()").unwrap());
+        let c_expr = CString::new(expr).unwrap_or_else(|_| CString::new("()").unwrap());
         let input_port = s7_open_input_string(sc, c_expr.as_ptr());
         let s7_obj = s7_read(sc, input_port);
         s7_close_input_port(sc, input_port);
@@ -530,21 +549,37 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
         } else if s7_is_pair(obj) {
             // Check if it's a quote form first
             let car = s7_car(obj);
+            if s7_is_syntax(car) {
+                let car_str = obj2str(sc, car);
+                if car_str == "#_quote" {
+                    let cdr = s7_cdr(obj);
+                    if s7_is_pair(cdr) && s7_is_null(sc, s7_cdr(cdr)) {
+                        let quoted_expr = s7_car(cdr);
+                        let mut special_type = Map::new();
+                        special_type.insert(
+                            "*type/quoted*".to_string(),
+                            s7_obj_to_json(sc, quoted_expr)?,
+                        );
+                        return Ok(Value::Object(special_type));
+                    }
+                }
+            }
             if s7_is_symbol(car) {
                 let symbol_name_ptr = s7_symbol_name(car);
                 if !symbol_name_ptr.is_null() {
                     let symbol_name = CStr::from_ptr(symbol_name_ptr).to_string_lossy();
 
                     if symbol_name == "quote" {
-                        // Handle quote form: convert (quote expr) to ["quote", expr]
+                        // Handle quote form: convert (quote expr) to {"*type/quoted*": <expr>}
                         let cdr = s7_cdr(obj);
                         if s7_is_pair(cdr) && s7_is_null(sc, s7_cdr(cdr)) {
-                            // It's a proper quote form: (quote expr)
                             let quoted_expr = s7_car(cdr);
-                            let mut array = Vec::new();
-                            array.push(Value::String("quote".to_string()));
-                            array.push(s7_obj_to_json(sc, quoted_expr)?);
-                            return Ok(Value::Array(array));
+                            let mut special_type = Map::new();
+                            special_type.insert(
+                                "*type/quoted*".to_string(),
+                                s7_obj_to_json(sc, quoted_expr)?,
+                            );
+                            return Ok(Value::Object(special_type));
                         }
                     }
                 }
@@ -639,6 +674,31 @@ unsafe fn s7_obj_to_json(sc: *mut s7_scheme, obj: s7_pointer) -> Result<Value, S
             // This is a simplified approach - we'd need to iterate through the hash table
             special_type.insert("*type/hash-table*".to_string(), Value::Array(pairs));
             Ok(Value::Object(special_type))
+        } else if s7_is_syntax(obj) {
+            // Fallback for syntax objects (e.g., nested quote shorthand).
+            let expr = obj2str(sc, obj);
+            let trimmed = expr.trim_start();
+            let quoted_inner = if let Some(rest) = trimmed.strip_prefix('\'') {
+                let rest = rest.trim_start();
+                if rest.is_empty() {
+                    return Err("Empty quoted expression".to_string());
+                }
+                rest
+            } else if let Some(rest) = trimmed.strip_prefix("(quote ") {
+                let rest = rest.trim_end();
+                if let Some(rest) = rest.strip_suffix(')') {
+                    rest.trim()
+                } else {
+                    return Err("Malformed quote syntax".to_string());
+                }
+            } else {
+                return Err(format!("Unsupported syntax object: {}", expr));
+            };
+
+            let quoted_json = lisp2json(quoted_inner)?;
+            let mut special_type = Map::new();
+            special_type.insert("*type/quoted*".to_string(), quoted_json);
+            Ok(Value::Object(special_type))
         } else {
             // For debugging: let's see what type this actually is
             let type_info = if s7_is_procedure(obj) {
@@ -712,6 +772,12 @@ unsafe fn json_to_s7_obj(sc: *mut s7_scheme, json: &Value) -> Result<s7_pointer,
                             s7_vector_set(sc, vector, i as i64, s7_item);
                         }
                         return Ok(vector);
+                    }
+                    if let Some(value) = obj.get("*type/quoted*") {
+                        let quoted = json_to_s7_obj(sc, value)?;
+                        let quote_sym = s7_make_symbol(sc, c"quote".as_ptr());
+                        let quoted_list = s7_cons(sc, quoted, s7_nil(sc));
+                        return Ok(s7_cons(sc, quote_sym, quoted_list));
                     }
                     if let Some(Value::String(hex)) = obj.get("*type/byte-vector*") {
                         let bytes: Result<Vec<u8>, ParseIntError> = (0..hex.len())
