@@ -2,7 +2,7 @@ use journal_sdk::{Config, JOURNAL};
 use log::info;
 use rocket::config::Config as RocketConfig;
 use rocket::data::{Limits, ToByteUnit};
-use rocket::response::content::RawHtml;
+use rocket::response::content::{RawHtml, RawText};
 use rocket::serde::json::Json;
 use rocket::{get, post, routes};
 use serde_json::Value;
@@ -20,6 +20,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
  <ul>
      <li><a href="/interface">LISP Interface</a></li>
      <li><a href="/interface/json">JSON Interface</a></li>
+     <li><a href="/interface/lisp-to-json">LISP to JSON</a></li>
+     <li><a href="/interface/json-to-lisp">JSON to LISP</a></li>
  </ul>
     </body>
 </html>
@@ -28,7 +30,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 const INTERFACE_HTML: &str = r#"<!DOCTYPE html>
 <html>
     <head>
- <h2>{}</h2>
+ <h2>__TITLE__</h2>
     </head>
     <body style="padding: 0 20px; font-family: 'Consolas'">
  <textarea id="query" rows="8" cols="128" spellcheck="false"></textarea>
@@ -43,9 +45,7 @@ const INTERFACE_HTML: &str = r#"<!DOCTYPE html>
   let query = document.getElementById('query').value;
   fetch('', {
       method: 'POST',
-      headers: {
-          'Content-Type': 'application/json',
-      },
+      __HEADERS__
       body: query,
   }).then(response => {
       return response.text();
@@ -76,7 +76,11 @@ async fn index() -> RawHtml<String> {
 
 #[get("/interface", format = "text/html")]
 async fn inform_lisp() -> RawHtml<String> {
-    RawHtml(INTERFACE_HTML.replace("{}", "LISP Interface"))
+    RawHtml(
+        INTERFACE_HTML
+            .replace("__TITLE__", "LISP Interface")
+            .replace("__HEADERS__", ""),
+    )
 }
 
 #[post("/interface", data = "<query>", rank = 1)]
@@ -84,15 +88,50 @@ async fn evaluate_lisp(query: &str) -> String {
     JOURNAL.evaluate(query)
 }
 
+#[get("/interface/lisp-to-json", format = "text/html")]
+async fn inform_lisp_to_json() -> RawHtml<String> {
+    RawHtml(
+        INTERFACE_HTML
+            .replace("__TITLE__", "LISP to JSON")
+            .replace("__HEADERS__", ""),
+    )
+}
+
+#[post("/interface/lisp-to-json", data = "<query>", rank = 1)]
+async fn lisp_to_json(query: &str) -> Json<Value> {
+    let result = JOURNAL.lisp_to_json(query);
+    Json(result)
+}
+
 #[get("/interface/json", format = "text/html")]
 async fn inform_json() -> RawHtml<String> {
-    RawHtml(INTERFACE_HTML.replace("{}", "JSON Interface"))
+    RawHtml(
+        INTERFACE_HTML
+            .replace("__TITLE__", "JSON Interface")
+            .replace(
+                "__HEADERS__",
+                "headers: { 'Content-Type': 'application/json' },",
+            ),
+    )
 }
 
 #[post("/interface/json", data = "<query>", format = "json", rank = 1)]
 async fn evaluate_json(query: Json<Value>) -> Json<Value> {
     let result = JOURNAL.evaluate_json(query.into_inner());
     Json(result)
+}
+
+#[get("/interface/json-to-lisp", format = "text/html")]
+async fn inform_json_to_lisp() -> RawHtml<String> {
+    RawHtml(INTERFACE_HTML.replace("__TITLE__", "JSON to LISP").replace(
+        "__HEADERS__",
+        "headers: { 'Content-Type': 'application/json' },",
+    ))
+}
+
+#[post("/interface/json-to-lisp", data = "<query>", format = "json", rank = 1)]
+async fn json_to_lisp(query: Json<Value>) -> RawText<String> {
+    RawText(JOURNAL.json_to_lisp(query.into_inner()))
 }
 
 #[rocket::main]
@@ -156,8 +195,12 @@ async fn main() {
                 index,
                 inform_lisp,
                 evaluate_lisp,
+                inform_lisp_to_json,
+                lisp_to_json,
                 inform_json,
-                evaluate_json
+                evaluate_json,
+                inform_json_to_lisp,
+                json_to_lisp
             ],
         )
         .configure(rocket_config)

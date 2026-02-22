@@ -89,7 +89,7 @@ pub fn obj2str(sc: *mut s7_scheme, obj: *mut s7_cell) -> String {
     }
 }
 
-pub fn scheme2json(expression: &str) -> Result<Value, String> {
+pub fn lisp2json(expression: &str) -> Result<Value, String> {
     // <TYPE>: <JSON>
     // ------------------------------------------------------
     // symbol: "string"
@@ -122,7 +122,7 @@ pub fn scheme2json(expression: &str) -> Result<Value, String> {
     }
 }
 
-pub fn json2scheme(expression: Value) -> Result<String, String> {
+pub fn json2lisp(expression: &Value) -> Result<String, String> {
     unsafe {
         let sc: *mut s7_scheme = s7_init();
         match json_to_s7_obj(sc, &expression) {

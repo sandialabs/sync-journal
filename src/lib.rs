@@ -1,7 +1,7 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
 pub use crate::config::Config;
-use crate::evaluator::{Evaluator, Primitive, Type, json2scheme, obj2str, scheme2json};
+use crate::evaluator::{Evaluator, Primitive, Type, json2lisp, obj2str, lisp2json};
 use crate::extensions::crypto::{
     primitive_s7_crypto_generate, primitive_s7_crypto_sign, primitive_s7_crypto_verify,
 };
@@ -139,17 +139,80 @@ impl Journal {
     }
 
     pub fn evaluate_json(&self, query: Value) -> Value {
-        match json2scheme(query) {
+        match json2lisp(&query) {
             Ok(scheme_query) => {
                 let result = self.evaluate_record(NULL, scheme_query.as_str());
-                match scheme2json(result.as_str()) {
+                match lisp2json(result.as_str()) {
                     Ok(json_result) => json_result,
-                    Err(_) => scheme2json("(error parse-error \"Failed to parse Scheme to JSON\")")
+                    Err(_) => {
+                        log::warn!(
+                            "Failed to parse Scheme to JSON. Result: {}",
+                            result
+                        );
+                        lisp2json("(error parse-error \"Failed to parse Scheme to JSON\")")
+                    }
                         .expect("Error parsing the JSON error message"),
                 }
             }
-            Err(_) => scheme2json("(error parse-error \"Failed to parse JSON to Scheme\")")
+            Err(_) => {
+                let query_str = serde_json::to_string(&query)
+                    .unwrap_or_else(|_| "<unprintable json>".to_string());
+                log::warn!(
+                    "Failed to parse JSON to Scheme. Query: {}",
+                    query_str
+                );
+                lisp2json("(error parse-error \"Failed to parse JSON to Scheme\")")
+            }
                 .expect("Error parsing the JSON error message"),
+        }
+    }
+
+    /// Convert a Lisp expression into its JSON representation without evaluation.
+    ///
+    /// # Examples
+    /// ```
+    /// use journal_sdk::JOURNAL;
+    /// use serde_json::json;
+    ///
+    /// let output = JOURNAL.lisp_to_json("(+ 1 2)");
+    /// assert_eq!(output, json!(["+", 1, 2]));
+    /// ```
+    pub fn lisp_to_json(&self, query: &str) -> Value {
+        match lisp2json(query) {
+            Ok(json_result) => json_result,
+            Err(_) => {
+                log::warn!(
+                    "Failed to parse Scheme to JSON. Query: {}",
+                    query
+                );
+                lisp2json("(error parse-error \"Failed to parse Scheme to JSON\")")
+            }
+            .expect("Error parsing the JSON error message"),
+        }
+    }
+
+    /// Convert a JSON expression into its Lisp representation without evaluation.
+    ///
+    /// # Examples
+    /// ```
+    /// use journal_sdk::JOURNAL;
+    /// use serde_json::json;
+    ///
+    /// let output = JOURNAL.json_to_lisp(json!(["+", 1, 2]));
+    /// assert_eq!(output, "(+ 1 2)");
+    /// ```
+    pub fn json_to_lisp(&self, query: Value) -> String {
+        match json2lisp(&query) {
+            Ok(scheme_result) => scheme_result,
+            Err(_) => {
+                let query_str = serde_json::to_string(&query)
+                    .unwrap_or_else(|_| "<unprintable json>".to_string());
+                log::warn!(
+                    "Failed to parse JSON to Scheme. Query: {}",
+                    query_str
+                );
+                "(error parse-error \"Failed to parse JSON to Scheme\")".to_string()
+            }
         }
     }
 
