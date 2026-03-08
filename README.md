@@ -100,9 +100,7 @@ This function simply evaluates any user query.
 From this highly generic and permissive functionality, it is possible to construct arbitrarily specific and controlled interfaces.
 The [./lisp](./lisp) folder provides some examples.
   
-# Disclaimer
+# Issues
 
-In general, this software still undergoing development.
-Functionality and interfaces may change at any time.
-
-// test ci/cd
+- [ ] Break inifinite sync-call loops
+- [ ] Add telemetry outputs

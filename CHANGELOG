@@ -2,11 +2,17 @@
 The purpose of this changelog is to document new features and breaking changes that are most likely to affect developers
 ------------------------------------------------------------------------------------------------------------------------
 
+--- v1.1.0 (2026.03.08) ---
+
+- Add `system-time-utc` and `system-time-unix` primitives for UTC/unix conversion
+- Move time primitives into a dedicated `system` extension module
+- Parse interface queries via `read/open-input-string` to handle trailing comments safely
+
 --- v1.0.5 (2025.02.26) ---
 
 - Add JSON <-> Scheme interface
 - Separate crypto primitives into separate namespace
-- Add unix time primitive
+- Add time-utc primitive
 - Use explicit period instead of periodicity
 
 --- v1.0.4 (2025.09.14) ---

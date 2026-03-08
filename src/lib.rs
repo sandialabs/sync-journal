@@ -5,6 +5,7 @@ use crate::evaluator::{Evaluator, Primitive, Type, json2lisp, obj2str, lisp2json
 use crate::extensions::crypto::{
     primitive_s7_crypto_generate, primitive_s7_crypto_sign, primitive_s7_crypto_verify,
 };
+use crate::extensions::system::{primitive_s7_system_time_unix, primitive_s7_system_time_utc};
 use crate::persistor::{MemoryPersistor, PERSISTOR, Persistor, PersistorAccessError};
 pub use crate::persistor::{SIZE, Word};
 use libc;
@@ -24,6 +25,7 @@ pub mod evaluator;
 mod persistor;
 mod extensions {
     pub mod crypto;
+    pub mod system;
 }
 
 pub static JOURNAL: Lazy<Journal> = Lazy::new(|| Journal::new());
@@ -71,6 +73,10 @@ pub struct JournalAccessError(pub Word);
 
 static LOCK: Mutex<()> = Mutex::new(());
 static RUNS: usize = 3;
+
+fn escape_scheme_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\"', "\\\"")
+}
 
 /// Journals are the primary way that application developers
 /// interact with the synchronic web.
@@ -299,6 +305,8 @@ impl Journal {
                     primitive_s7_crypto_generate(),
                     primitive_s7_crypto_sign(),
                     primitive_s7_crypto_verify(),
+                    primitive_s7_system_time_unix(),
+                    primitive_s7_system_time_utc(),
                 ],
             );
 
@@ -318,8 +326,10 @@ impl Journal {
             });
 
             let expr = format!(
-                "((eval {}) (sync-node {}) (quote {}))",
-                genesis_str, state_str, query
+                "((eval {}) (sync-node {}) (read (open-input-string \"{}\")))",
+                genesis_str,
+                state_str,
+                escape_scheme_string(query),
             );
 
             let result = evaluator.evaluate(expr.as_str());

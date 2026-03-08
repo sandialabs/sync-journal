@@ -1,6 +1,6 @@
 [package]
 name = "journal-sdk"
-version = "1.0.5"
+version = "1.1.0"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -32,3 +32,4 @@ crystals-dilithium = "1.0.0"
 pqcrypto = "0.17.0"
 tokio = { version = "1.0", features = ["time", "rt", "rt-multi-thread", "macros"] }
 serde_json = "1.0.149"
+time = { version = "0.3.44", features = ["formatting"] }

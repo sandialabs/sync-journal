@@ -50,6 +50,41 @@ fn test_standard() {
 }
 
 #[test]
+fn test_trailing_comment_at_end() {
+    let result = JOURNAL.evaluate("(+ 2 2) ; trailing comment");
+    assert_eq!(result, "4");
+}
+
+#[test]
+fn test_time_utc_format() {
+    let result = JOURNAL.evaluate("(system-time-utc)");
+    assert!(result.starts_with('\"'));
+    assert!(result.ends_with("Z\""));
+    assert!(result.contains('T'));
+}
+
+#[test]
+fn test_time_unix_format() {
+    let result = JOURNAL.evaluate("(system-time-unix)");
+    let parsed = result
+        .parse::<i64>()
+        .expect("system-time-unix should return an integer");
+    assert!(parsed > 0, "system-time-unix should be a positive epoch value");
+}
+
+#[test]
+fn test_time_utc_from_unix() {
+    let result = JOURNAL.evaluate("(system-time-utc 0)");
+    assert_eq!(result, "\"1970-01-01T00:00:00Z\"");
+}
+
+#[test]
+fn test_time_unix_from_utc() {
+    let result = JOURNAL.evaluate("(system-time-unix \"1970-01-01T00:00:00Z\")");
+    assert_eq!(result, "0");
+}
+
+#[test]
 fn test_scratch() {
     let assert = setup();
     let code = fs::read_to_string("lisp/scratch.scm").unwrap();
