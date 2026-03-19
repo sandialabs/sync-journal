@@ -18,10 +18,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     </head>
     <body style="padding: 0 20px; font-family: 'Consolas'">
  <ul>
-     <li><a href="/interface">LISP Interface</a></li>
+     <li><a href="/interface">Scheme Interface</a></li>
      <li><a href="/interface/json">JSON Interface</a></li>
-     <li><a href="/interface/lisp-to-json">LISP to JSON</a></li>
-     <li><a href="/interface/json-to-lisp">JSON to LISP</a></li>
+     <li><a href="/interface/scheme-to-json">Scheme to JSON</a></li>
+     <li><a href="/interface/json-to-scheme">JSON to Scheme</a></li>
  </ul>
     </body>
 </html>
@@ -78,7 +78,7 @@ async fn index() -> RawHtml<String> {
 async fn inform_lisp() -> RawHtml<String> {
     RawHtml(
         INTERFACE_HTML
-            .replace("__TITLE__", "LISP Interface")
+            .replace("__TITLE__", "Scheme Interface")
             .replace("__HEADERS__", ""),
     )
 }
@@ -88,18 +88,18 @@ async fn evaluate_lisp(query: &str) -> String {
     JOURNAL.evaluate(query)
 }
 
-#[get("/interface/lisp-to-json", format = "text/html")]
-async fn inform_lisp_to_json() -> RawHtml<String> {
+#[get("/interface/scheme-to-json", format = "text/html")]
+async fn inform_scheme_to_json() -> RawHtml<String> {
     RawHtml(
         INTERFACE_HTML
-            .replace("__TITLE__", "LISP to JSON")
+            .replace("__TITLE__", "Scheme to JSON")
             .replace("__HEADERS__", ""),
     )
 }
 
-#[post("/interface/lisp-to-json", data = "<query>", rank = 1)]
-async fn lisp_to_json(query: &str) -> Json<Value> {
-    let result = JOURNAL.lisp_to_json(query);
+#[post("/interface/scheme-to-json", data = "<query>", rank = 1)]
+async fn scheme_to_json(query: &str) -> Json<Value> {
+    let result = JOURNAL.scheme_to_json(query);
     Json(result)
 }
 
@@ -121,17 +121,17 @@ async fn evaluate_json(query: Json<Value>) -> Json<Value> {
     Json(result)
 }
 
-#[get("/interface/json-to-lisp", format = "text/html")]
-async fn inform_json_to_lisp() -> RawHtml<String> {
-    RawHtml(INTERFACE_HTML.replace("__TITLE__", "JSON to LISP").replace(
+#[get("/interface/json-to-scheme", format = "text/html")]
+async fn inform_json_to_scheme() -> RawHtml<String> {
+    RawHtml(INTERFACE_HTML.replace("__TITLE__", "JSON to Scheme").replace(
         "__HEADERS__",
         "headers: { 'Content-Type': 'application/json' },",
     ))
 }
 
-#[post("/interface/json-to-lisp", data = "<query>", format = "json", rank = 1)]
-async fn json_to_lisp(query: Json<Value>) -> RawText<String> {
-    RawText(JOURNAL.json_to_lisp(query.into_inner()))
+#[post("/interface/json-to-scheme", data = "<query>", format = "json", rank = 1)]
+async fn json_to_scheme(query: Json<Value>) -> RawText<String> {
+    RawText(JOURNAL.json_to_scheme(query.into_inner()))
 }
 
 #[rocket::main]
@@ -154,7 +154,9 @@ async fn main() {
     let mut rocket_config = RocketConfig::default();
     rocket_config.port = config.port;
     rocket_config.address = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0));
-    rocket_config.limits = Limits::new().limit("string", 1_i32.mebibytes());
+    rocket_config.limits = Limits::new()
+        .limit("string", 64_i32.mebibytes())
+        .limit("json", 64_i32.mebibytes());
 
     if config.step != "" {
         tokio::spawn(async move {
@@ -195,12 +197,12 @@ async fn main() {
                 index,
                 inform_lisp,
                 evaluate_lisp,
-                inform_lisp_to_json,
-                lisp_to_json,
+                inform_scheme_to_json,
+                scheme_to_json,
                 inform_json,
                 evaluate_json,
-                inform_json_to_lisp,
-                json_to_lisp
+                inform_json_to_scheme,
+                json_to_scheme
             ],
         )
         .configure(rocket_config)

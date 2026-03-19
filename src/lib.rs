@@ -9,7 +9,7 @@ use crate::extensions::system::{primitive_s7_system_time_unix, primitive_s7_syst
 use crate::persistor::{MemoryPersistor, PERSISTOR, Persistor, PersistorAccessError};
 pub use crate::persistor::{SIZE, Word};
 use libc;
-use log::{debug, info};
+use log::{debug, info, warn};
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -78,6 +78,25 @@ fn escape_scheme_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\"', "\\\"")
 }
 
+fn truncate_for_log(value: &str, limit: usize) -> String {
+    let truncated: String = value.chars().take(limit).collect();
+    if value.chars().count() > limit {
+        format!("{truncated} ...")
+    } else {
+        truncated
+    }
+}
+
+fn warn_on_error_result(query: &str, output: &str) {
+    if output.starts_with("(error ") {
+        warn!(
+            "Evaluation returned error form. Query: {} Result: {}",
+            truncate_for_log(query, 256),
+            truncate_for_log(output, 256),
+        );
+    }
+}
+
 /// Journals are the primary way that application developers
 /// interact with the synchronic web.
 ///
@@ -88,7 +107,7 @@ fn escape_scheme_string(value: &str) -> String {
 ///
 /// * __Persistence__: managing bytes on the global hash graph
 ///
-/// * __Evaluation__: executing code in the global Lisp environment
+/// * __Evaluation__: executing code in the global Scheme environment
 ///
 /// __Records__ are the primary way that developers interface with
 /// Journals. A Record is a mapping between a constant identifier and
@@ -125,7 +144,7 @@ impl Journal {
         }
     }
 
-    /// Evaluate a Lisp expression within a Record
+    /// Evaluate a Scheme expression within a Record
     ///
     /// # Examples
     /// ```
@@ -173,17 +192,17 @@ impl Journal {
         }
     }
 
-    /// Convert a Lisp expression into its JSON representation without evaluation.
+    /// Convert a Scheme expression into its JSON representation without evaluation.
     ///
     /// # Examples
     /// ```
     /// use journal_sdk::JOURNAL;
     /// use serde_json::json;
     ///
-    /// let output = JOURNAL.lisp_to_json("(+ 1 2)");
+    /// let output = JOURNAL.scheme_to_json("(+ 1 2)");
     /// assert_eq!(output, json!(["+", 1, 2]));
     /// ```
-    pub fn lisp_to_json(&self, query: &str) -> Value {
+    pub fn scheme_to_json(&self, query: &str) -> Value {
         match lisp2json(query) {
             Ok(json_result) => json_result,
             Err(_) => {
@@ -197,17 +216,17 @@ impl Journal {
         }
     }
 
-    /// Convert a JSON expression into its Lisp representation without evaluation.
+    /// Convert a JSON expression into its Scheme representation without evaluation.
     ///
     /// # Examples
     /// ```
     /// use journal_sdk::JOURNAL;
     /// use serde_json::json;
     ///
-    /// let output = JOURNAL.json_to_lisp(json!(["+", 1, 2]));
+    /// let output = JOURNAL.json_to_scheme(json!(["+", 1, 2]));
     /// assert_eq!(output, "(+ 1 2)");
     /// ```
-    pub fn json_to_lisp(&self, query: Value) -> String {
+    pub fn json_to_scheme(&self, query: Value) -> String {
         match json2lisp(&query) {
             Ok(scheme_result) => scheme_result,
             Err(_) => {
@@ -370,6 +389,7 @@ impl Journal {
 
             match state_old == state_new {
                 true => {
+                    warn_on_error_result(query, output.as_str());
                     debug!(
                         "Completed ({:?}) {} -> {}",
                         start.elapsed(),
@@ -433,6 +453,7 @@ impl Journal {
                             match iterate(&persistor, state_new) {
                                 Ok(_) => match PERSISTOR.root_set(record, state_old, state_new) {
                                     Ok(_) => {
+                                        warn_on_error_result(query, output.as_str());
                                         debug!(
                                             "Completed ({:?}) {} -> {}",
                                             start.elapsed(),

@@ -54,15 +54,15 @@ Here are other auxiliary actions that may be useful in the course of development
   
 # Use
 
-The `interface` endpoint exposes an evaluator for executing arbitrary code in a Lisp dialect.
+The `interface` endpoint exposes an evaluator for executing arbitrary code in a Scheme dialect.
 Once the service deploys, all interaction with the Journal SDK should take place through this interface.
 The evaluator itself is stateless; all variables and computations are cleared between each invocation of the endpoint.
 However, the SDK provides a controlled ability to read and write persistent data to the backend database.
 By leveraging the functionality and workflow specified below, it is possible to create arbitrarily complex stateful interfaces that benefit from the same core cryptographic verifiability afforded by the Journal.
 
-## Lisp Evaluation
+## Scheme Evaluation
 
-The Lisp dialect used for Synchronic Web code is a lightly modified version of s7 Scheme.
+The Scheme dialect used for Synchronic Web code is a lightly modified version of s7 Scheme.
 All source code and documentation is available in the [./external/s7](./external/s7) folder.
 Other basic modifcations include:
 
@@ -91,7 +91,7 @@ There is only one structural constraint on the form of the record: for a record 
 `(lambda (*sync-state* query) (cons ... *sync-state*))`
 
 The `*sync-state*` parameter is the root node of the record while the `query` parameter is the expression provided through the `/interface` endpoint.
-The function returns a Lisp pair where the first item is the response to the `/inferface` call and the second item is the new root node.
+The function returns a Scheme pair where the first item is the response to the `/inferface` call and the second item is the new root node.
 For example, the default function is the following:
 
 `(lambda (*sync-state* query) (cons (eval query) *sync-state*))`
