@@ -1,6 +1,8 @@
-# --- Build ---
+# syntax=docker/dockerfile:1.7
 
-FROM alpine:3.23.3 AS builder
+# --- Build base ---
+
+FROM alpine:3.23.3 AS chef
 
 ARG RUST_LOG=info
 ARG CUSTOM_SETUP=""
@@ -17,19 +19,50 @@ RUN set -eu; \
       rm -f /tmp/custom-setup.sh; \
     fi
 
-# Install OS dependencies
-RUN apk update
-RUN apk add cargo
-RUN apk add clang
-RUN apk add clang-dev
-RUN apk add openssl-dev
-RUN apk add build-base
-RUN apk add linux-headers
+RUN apk update && apk add --no-cache \
+    build-base \
+    cargo \
+    clang \
+    clang-dev \
+    linux-headers \
+    openssl-dev
 
-# Build SDK
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    cargo install cargo-chef --locked
+
 WORKDIR /srv
-COPY . . 
-RUN cargo build --release
+
+# --- Dependency planning ---
+
+FROM chef AS planner
+
+COPY . .
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+# --- Dependency build ---
+
+FROM chef AS cacher
+
+COPY --from=planner /srv/recipe.json recipe.json
+
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/srv/target \
+    cargo chef cook --release --recipe-path recipe.json
+
+# --- Application build ---
+
+FROM chef AS builder
+
+COPY . .
+
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/srv/target \
+    cargo build --release && \
+    cp /srv/target/release/journal-sdk /tmp/journal-sdk
 
 # --- Deploy ---
 
@@ -48,7 +81,7 @@ RUN set -eu; \
 
 COPY --from=builder /usr/lib/libgcc_s.so.1 /usr/lib/
 COPY --from=builder /usr/lib/libstdc++.so.6* /usr/lib/
-COPY --from=builder /srv/target/release/journal-sdk .
+COPY --from=builder /tmp/journal-sdk ./journal-sdk
 
 ENTRYPOINT ["./journal-sdk"]
 

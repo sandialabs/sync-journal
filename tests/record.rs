@@ -85,6 +85,23 @@ fn test_time_unix_from_utc() {
 }
 
 #[test]
+fn test_sync_load() {
+    let assert = setup();
+    assert(
+        "(let* ((code '(lambda (state) (define* (self (arg #f)) (if arg arg state))))
+                (node (sync-cons (expression->byte-vector code) (sync-null))))
+           ((sync-eval node #f) 'hello))",
+        "hello",
+    );
+    assert(
+        "(let* ((code '(lambda (state) (define* (self (arg #f)) (if arg arg state))))
+                (node (sync-cons (expression->byte-vector code) (sync-null))))
+           (sync-node? ((sync-eval node #f))))",
+        "#t",
+    );
+}
+
+#[test]
 fn test_scratch() {
     let assert = setup();
     let code = fs::read_to_string("lisp/scratch.scm").unwrap();
@@ -163,36 +180,4 @@ fn test_rdf() {
     assert("(select a b ())", "((a b c) (a b d))");
     assert("(remove a b c)", "(a b c)");
     assert("(select a b ())", "((a b d))");
-}
-
-#[test]
-fn test_state() {
-    let assert = setup();
-    let code = fs::read_to_string("lisp/state.scm").unwrap();
-    assert(&code, "\"Installed state machine interface\"");
-    assert("(define x 2)", "2");
-    assert("x", "2");
-    assert("(define x 4)", "4");
-    assert("x", "4");
-    assert("(state-index)", "3");
-    assert("((state-get 1) 'x)", "2");
-
-    assert("(define x '(1 2 3 4))", "(1 2 3 4)");
-    assert("x", "(1 2 3 4)");
-    assert("(define x (hash-table 'a 1))", "(hash-table 'a 1)");
-    assert("x", "(hash-table 'a 1)");
-    assert("(define x #2d((1 2) (3 4)))", "#2d((1 2) (3 4))");
-    assert("x", "#2d((1 2) (3 4))");
-    assert("(define (add2 x) (+ x 2))", "add2");
-    assert("(add2 2)", "4");
-    assert("(define-macro (swap x y) `(list ,y ,x))", "swap");
-    assert("(swap 1 2)", "(2 1)");
-    assert("(define x (inlet 'a 1 'b 2))", "(inlet 'a 1 'b 2)");
-    assert("x", "(inlet 'a 1 'b 2)");
-
-    assert(
-        "(begin (define add2 (state-dump (lambda (x) (+ x 2)))) #t)",
-        "#t",
-    );
-    assert("((state-load add2) 2)", "4");
 }

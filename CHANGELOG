@@ -2,6 +2,15 @@
 The purpose of this changelog is to document new features and breaking changes that are most likely to affect developers
 ------------------------------------------------------------------------------------------------------------------------
 
+--- v1.2.0 (2026.03.29) ---
+
+- Rework strict `sync-eval` around explicit `sync-state` bootstrapping and a more isolated evaluation environment
+- Improve journal runtime concurrency by snapshotting evaluation state, reducing coarse locking, and allowing more concurrent persistor reads
+- Fix persistor root publication, deletion, and reference-ordering issues and clean up root-set merge handling
+- Add and harden strict caching, including correct cache-root eviction and a dedicated cache/overlay module
+- Allow `sync-null?`, `sync-pair?`, `sync-stub?`, and `sync-digest` to operate cleanly on byte-vectors
+- Add primitive integration sanity tests and refresh primitive help text
+
 --- v1.1.0 (2026.03.08) ---
 
 - Add `system-time-utc` and `system-time-unix` primitives for UTC/unix conversion

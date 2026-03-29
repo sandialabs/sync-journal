@@ -90,13 +90,14 @@ There is only one structural constraint on the form of the record: for a record 
 
 `(lambda (*sync-state* query) (cons ... *sync-state*))`
 
-The `*sync-state*` parameter is the root node of the record while the `query` parameter is the expression provided through the `/interface` endpoint.
-The function returns a Scheme pair where the first item is the response to the `/inferface` call and the second item is the new root node.
+At request time, the journal supplies the current record root as the `*sync-state*` argument and also exposes `(sync-state)` as a primitive that returns the current session root as a `sync-node`.
+The `query` parameter is the expression provided through the `/interface` endpoint.
+The function returns a Scheme pair where the first item is the response to the `/interface` call and the second item is the new root node.
 For example, the default function is the following:
 
 `(lambda (*sync-state* query) (cons (eval query) *sync-state*))`
 
-This function simply evaluates any user query.
+This function simply evaluates any user query against the current state binding.
 From this highly generic and permissive functionality, it is possible to construct arbitrarily specific and controlled interfaces.
 The [./lisp](./lisp) folder provides some examples.
   

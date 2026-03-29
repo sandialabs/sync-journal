@@ -1,12 +1,12 @@
 use crate::config::Config;
 use once_cell::sync::Lazy;
-use rand::prelude::SliceRandom;
 use rand::RngCore;
+use rand::prelude::SliceRandom;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
-use rocksdb::{ColumnFamilyDescriptor, Options, DB};
+use rocksdb::{ColumnFamilyDescriptor, DB, Options, WriteBatch};
 
 pub static PERSISTOR: Lazy<Box<dyn Persistor + Send + Sync>> = Lazy::new(|| {
     let config = Config::new();
@@ -31,7 +31,13 @@ pub trait Persistor {
     fn root_new(&self, handle: Word, root: Word) -> Result<Word, PersistorAccessError>;
     fn root_temp(&self, root: Word) -> Result<Word, PersistorAccessError>;
     fn root_get(&self, handle: Word) -> Result<Word, PersistorAccessError>;
-    fn root_set(&self, handle: Word, old: Word, new: Word) -> Result<Word, PersistorAccessError>;
+    fn root_set(
+        &self,
+        handle: Word,
+        old: Word,
+        new: Word,
+        source: &dyn Persistor,
+    ) -> Result<Word, PersistorAccessError>;
     fn root_delete(&self, handle: Word) -> Result<(), PersistorAccessError>;
     fn branch_set(
         &self,
@@ -48,26 +54,26 @@ pub trait Persistor {
 
 #[derive(Clone)]
 pub struct MemoryPersistor {
-    roots: Arc<Mutex<HashMap<Word, (Word, bool)>>>,
-    branches: Arc<Mutex<HashMap<Word, (Word, Word, Word)>>>,
-    leaves: Arc<Mutex<HashMap<Word, Vec<u8>>>>,
-    stumps: Arc<Mutex<HashMap<Word, Word>>>,
-    references: Arc<Mutex<HashMap<Word, usize>>>,
+    roots: Arc<RwLock<HashMap<Word, (Word, bool)>>>,
+    branches: Arc<RwLock<HashMap<Word, (Word, Word, Word)>>>,
+    leaves: Arc<RwLock<HashMap<Word, Vec<u8>>>>,
+    stumps: Arc<RwLock<HashMap<Word, Word>>>,
+    references: Arc<RwLock<HashMap<Word, usize>>>,
 }
 
 impl MemoryPersistor {
     pub fn new() -> Self {
         Self {
-            roots: Arc::new(Mutex::new(HashMap::new())),
-            branches: Arc::new(Mutex::new(HashMap::new())),
-            leaves: Arc::new(Mutex::new(HashMap::new())),
-            stumps: Arc::new(Mutex::new(HashMap::new())),
-            references: Arc::new(Mutex::new(HashMap::new())),
+            roots: Arc::new(RwLock::new(HashMap::new())),
+            branches: Arc::new(RwLock::new(HashMap::new())),
+            leaves: Arc::new(RwLock::new(HashMap::new())),
+            stumps: Arc::new(RwLock::new(HashMap::new())),
+            references: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     fn reference_increment(&self, node: Word) {
-        let mut references = self.references.lock().expect("Failed to lock references");
+        let mut references = self.references.write().expect("Failed to lock references");
         match references.get(&node) {
             Some(count) => {
                 let count_ = *count;
@@ -80,7 +86,7 @@ impl MemoryPersistor {
     }
 
     fn reference_decrement(&self, node: Word) {
-        let mut references = self.references.lock().expect("Failed to lock references");
+        let mut references = self.references.write().expect("Failed to lock references");
         match references.get(&node) {
             Some(count_old) => {
                 let count_new = *count_old - 1;
@@ -88,7 +94,7 @@ impl MemoryPersistor {
                     references.insert(node, count_new);
                 } else {
                     references.remove(&node);
-                    let mut branches = self.branches.lock().expect("Failed to lock branches");
+                    let mut branches = self.branches.write().expect("Failed to lock branches");
                     if let Some((left, right, _)) = branches.get(&node) {
                         let left_ = *left;
                         let right_ = *right;
@@ -98,8 +104,8 @@ impl MemoryPersistor {
                         self.reference_decrement(left_);
                         self.reference_decrement(right_);
                     } else {
-                        let mut leaves = self.leaves.lock().expect("Failed to lock leaves");
-                        let mut stumps = self.stumps.lock().expect("Failed to lock stumps");
+                        let mut leaves = self.leaves.write().expect("Failed to lock leaves");
+                        let mut stumps = self.stumps.write().expect("Failed to lock stumps");
                         if let Some(_) = leaves.get(&node) {
                             leaves.remove(&node);
                         } else if let Some(_) = stumps.get(&node) {
@@ -111,13 +117,127 @@ impl MemoryPersistor {
             None => {}
         };
     }
+
+    fn merged_branch(
+        &self,
+        node: Word,
+        plan: &MergePlan,
+    ) -> Result<Option<(Word, Word, Word)>, PersistorAccessError> {
+        if let Some(branch) = plan.branches.get(&node) {
+            return Ok(Some(*branch));
+        }
+
+        match self
+            .branches
+            .read()
+            .expect("Failed to lock branches")
+            .get(&node)
+        {
+            Some((left, right, digest)) => Ok(Some((*left, *right, *digest))),
+            None => Ok(None),
+        }
+    }
+
+    fn base_refcount(&self, node: Word) -> isize {
+        self.references
+            .read()
+            .expect("Failed to lock references")
+            .get(&node)
+            .copied()
+            .unwrap_or(0) as isize
+    }
+
+    fn merge_collect(
+        &self,
+        source: &dyn Persistor,
+        node: Word,
+        plan: &mut MergePlan,
+        seen: &mut HashSet<Word>,
+    ) -> Result<(), PersistorAccessError> {
+        if node == [0 as u8; SIZE] || !seen.insert(node) {
+            return Ok(());
+        }
+
+        if plan.branches.contains_key(&node)
+            || plan.leaves.contains_key(&node)
+            || plan.stumps.contains_key(&node)
+        {
+            return Ok(());
+        }
+
+        if self
+            .leaves
+            .read()
+            .expect("Failed to lock leaves")
+            .contains_key(&node)
+            || self
+                .stumps
+                .read()
+                .expect("Failed to lock stumps")
+                .contains_key(&node)
+            || self
+                .branches
+                .read()
+                .expect("Failed to lock branches")
+                .contains_key(&node)
+        {
+            return Ok(());
+        }
+
+        if let Ok(content) = source.leaf_get(node) {
+            plan.leaves.insert(node, content);
+            return Ok(());
+        }
+
+        if let Ok(digest) = source.stump_get(node) {
+            plan.stumps.insert(node, digest);
+            return Ok(());
+        }
+
+        if let Ok((left, right, digest)) = source.branch_get(node) {
+            self.merge_collect(source, left, plan, seen)?;
+            self.merge_collect(source, right, plan, seen)?;
+            plan.branches.insert(node, (left, right, digest));
+            plan.delta_add(left, 1);
+            plan.delta_add(right, 1);
+            return Ok(());
+        }
+
+        Ok(())
+    }
+
+    fn release_plan(&self, node: Word, plan: &mut MergePlan) -> Result<(), PersistorAccessError> {
+        if node == [0 as u8; SIZE] {
+            return Ok(());
+        }
+
+        let effective = self.base_refcount(node) + plan.deltas.get(&node).copied().unwrap_or(0);
+        if effective <= 0 {
+            return Ok(());
+        }
+
+        plan.delta_add(node, -1);
+
+        if effective == 1 {
+            if !plan.deletes.insert(node) {
+                return Ok(());
+            }
+
+            if let Some((left, right, _)) = self.merged_branch(node, plan)? {
+                self.release_plan(left, plan)?;
+                self.release_plan(right, plan)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Persistor for MemoryPersistor {
     fn root_list(&self) -> Vec<Word> {
         let mut keys: Vec<Word> = self
             .roots
-            .lock()
+            .read()
             .expect("Failed to get locked roots")
             .iter()
             .filter(|&(_, &(_, is_persistent))| is_persistent)
@@ -129,7 +249,7 @@ impl Persistor for MemoryPersistor {
     }
 
     fn root_new(&self, handle: Word, root: Word) -> Result<Word, PersistorAccessError> {
-        let mut roots = self.roots.lock().expect("Failed to lock roots map");
+        let mut roots = self.roots.write().expect("Failed to lock roots map");
         match roots.get(&handle) {
             Some(_) => Err(PersistorAccessError(format!(
                 "Handle {:?} already exists",
@@ -144,18 +264,18 @@ impl Persistor for MemoryPersistor {
     }
 
     fn root_temp(&self, root: Word) -> Result<Word, PersistorAccessError> {
-        let mut roots = self.roots.lock().expect("Failed to lock roots map");
-        let mut handle: Word = [0 as u8; 32];
-        rand::thread_rng().fill_bytes(&mut handle);
-        match roots.get(&handle) {
+        let mut roots = self.roots.write().expect("Failed to lock roots map");
+        let mut handle_: Word = [0 as u8; 32];
+        rand::thread_rng().fill_bytes(&mut handle_);
+        match roots.get(&handle_) {
             Some(_) => Err(PersistorAccessError(format!(
                 "Handle {:?} already exists",
-                handle
+                handle_
             ))),
             None => {
                 self.reference_increment(root);
-                roots.insert(handle, (root, false));
-                Ok(handle)
+                roots.insert(handle_, (root, false));
+                Ok(handle_)
             }
         }
     }
@@ -163,7 +283,7 @@ impl Persistor for MemoryPersistor {
     fn root_get(&self, handle: Word) -> Result<Word, PersistorAccessError> {
         match self
             .roots
-            .lock()
+            .read()
             .expect("Failed to lock roots map")
             .get(&handle)
         {
@@ -175,24 +295,87 @@ impl Persistor for MemoryPersistor {
         }
     }
 
-    fn root_set(&self, handle: Word, old: Word, new: Word) -> Result<Word, PersistorAccessError> {
-        let mut roots = self.roots.lock().expect("Failed to lock roots map");
-        match roots.get(&handle) {
-            Some((root, true)) if *root == old => {
-                self.reference_increment(new);
-                self.reference_decrement(old);
+    fn root_set(
+        &self,
+        handle: Word,
+        old: Word,
+        new: Word,
+        source: &dyn Persistor,
+    ) -> Result<Word, PersistorAccessError> {
+        let status = {
+            let roots = self.roots.write().expect("Failed to lock roots map");
+            match roots.get(&handle) {
+                Some((root, true)) if *root == old => 0,
+                Some((_, false)) => 1,
+                Some((_, true)) => 2,
+                None => 3,
+            }
+        };
+
+        match status {
+            0 => {
+                let mut plan = MergePlan::new();
+                let mut seen = HashSet::new();
+                self.merge_collect(source, new, &mut plan, &mut seen)?;
+                plan.delta_add(new, 1);
+                self.release_plan(old, &mut plan)?;
+
+                {
+                    let mut leaves = self.leaves.write().expect("Failed to lock leaves");
+                    for (node, content) in plan.leaves.iter() {
+                        leaves.insert(*node, content.clone());
+                    }
+                    for node in plan.deletes.iter() {
+                        leaves.remove(node);
+                    }
+                }
+
+                {
+                    let mut stumps = self.stumps.write().expect("Failed to lock stumps");
+                    for (node, digest) in plan.stumps.iter() {
+                        stumps.insert(*node, *digest);
+                    }
+                    for node in plan.deletes.iter() {
+                        stumps.remove(node);
+                    }
+                }
+
+                {
+                    let mut branches = self.branches.write().expect("Failed to lock branches");
+                    for (node, branch) in plan.branches.iter() {
+                        branches.insert(*node, *branch);
+                    }
+                    for node in plan.deletes.iter() {
+                        branches.remove(node);
+                    }
+                }
+
+                {
+                    let mut references = self.references.write().expect("Failed to lock references");
+                    for (node, delta) in plan.deltas.iter() {
+                        let base = references.get(node).copied().unwrap_or(0) as isize;
+                        let next = base + delta;
+                        if next > 0 {
+                            references.insert(*node, next as usize);
+                        } else {
+                            references.remove(node);
+                        }
+                    }
+                }
+
+                let mut roots = self.roots.write().expect("Failed to lock roots map");
                 roots.insert(handle, (new, true));
                 Ok(handle)
             }
-            Some((_, false)) => Err(PersistorAccessError(format!(
+            1 => Err(PersistorAccessError(format!(
                 "Handle {:?} is temporary",
                 handle
             ))),
-            Some((_, true)) => Err(PersistorAccessError(format!(
+            2 => Err(PersistorAccessError(format!(
                 "Handle {:?} changed since compare",
                 handle
             ))),
-            None => Err(PersistorAccessError(format!(
+            _ => Err(PersistorAccessError(format!(
                 "Handle {:?} not found",
                 handle
             ))),
@@ -200,11 +383,12 @@ impl Persistor for MemoryPersistor {
     }
 
     fn root_delete(&self, handle: Word) -> Result<(), PersistorAccessError> {
-        let mut roots = self.roots.lock().expect("Failed to lock roots map");
+        let mut roots = self.roots.write().expect("Failed to lock roots map");
         match roots.get(&handle) {
             Some((old, _)) => {
-                self.reference_decrement(*old);
+                let old_ = *old;
                 roots.remove(&handle);
+                self.reference_decrement(old_);
                 Ok(())
             }
             None => Err(PersistorAccessError(format!(
@@ -226,17 +410,16 @@ impl Persistor for MemoryPersistor {
         joined[SIZE * 2..].copy_from_slice(&digest);
 
         let branch = Sha256::digest(joined);
-        self.branches
-            .lock()
-            .expect("Failed to lock branches map")
-            .insert(branch.into(), (left, right, digest));
+        let mut branches = self.branches.write().expect("Failed to lock branches map");
+        branches.insert(branch.into(), (left, right, digest));
+        drop(branches);
         self.reference_increment(left);
         self.reference_increment(right);
         Ok(Word::from(branch))
     }
 
     fn branch_get(&self, branch: Word) -> Result<(Word, Word, Word), PersistorAccessError> {
-        let branches = self.branches.lock().expect("Failed to lock branches map");
+        let branches = self.branches.read().expect("Failed to lock branches map");
         match branches.get(&branch) {
             Some((left, right, digest)) => {
                 let mut joined = [0 as u8; SIZE * 3];
@@ -256,14 +439,14 @@ impl Persistor for MemoryPersistor {
     fn leaf_set(&self, content: Vec<u8>) -> Result<Word, PersistorAccessError> {
         let leaf = Word::from(Sha256::digest(Sha256::digest(&content)));
         self.leaves
-            .lock()
+            .write()
             .expect("Failed to lock leaves map")
             .insert(leaf, content);
         Ok(leaf)
     }
 
     fn leaf_get(&self, leaf: Word) -> Result<Vec<u8>, PersistorAccessError> {
-        let leaves = self.leaves.lock().expect("Failed to lock leaves map");
+        let leaves = self.leaves.read().expect("Failed to lock leaves map");
         match leaves.get(&leaf) {
             Some(content) => {
                 assert!(Vec::from(leaf) == Sha256::digest(Sha256::digest(content)).to_vec());
@@ -276,14 +459,14 @@ impl Persistor for MemoryPersistor {
     fn stump_set(&self, digest: Word) -> Result<Word, PersistorAccessError> {
         let stump = Sha256::digest(digest);
         self.stumps
-            .lock()
+            .write()
             .expect("Failed to lock stump map")
             .insert(stump.into(), digest);
         Ok(Word::from(stump))
     }
 
     fn stump_get(&self, stump: Word) -> Result<Word, PersistorAccessError> {
-        let stumps = self.stumps.lock().expect("Failed to lock stumps map");
+        let stumps = self.stumps.read().expect("Failed to lock stumps map");
         match stumps.get(&stump) {
             Some(digest) => {
                 assert!(Vec::from(stump) == Sha256::digest(Vec::from(digest)).to_vec());
@@ -295,7 +478,36 @@ impl Persistor for MemoryPersistor {
 }
 
 pub struct DatabasePersistor {
-    db: Mutex<DB>,
+    db: RwLock<DB>,
+}
+
+struct MergePlan {
+    branches: HashMap<Word, (Word, Word, Word)>,
+    leaves: HashMap<Word, Vec<u8>>,
+    stumps: HashMap<Word, Word>,
+    deltas: HashMap<Word, isize>,
+    deletes: HashSet<Word>,
+}
+
+impl MergePlan {
+    fn new() -> Self {
+        Self {
+            branches: HashMap::new(),
+            leaves: HashMap::new(),
+            stumps: HashMap::new(),
+            deltas: HashMap::new(),
+            deletes: HashSet::new(),
+        }
+    }
+
+    fn delta_add(&mut self, node: Word, amount: isize) {
+        let next = self.deltas.get(&node).copied().unwrap_or(0) + amount;
+        if next == 0 {
+            self.deltas.remove(&node);
+        } else {
+            self.deltas.insert(node, next);
+        }
+    }
 }
 
 impl DatabasePersistor {
@@ -312,7 +524,7 @@ impl DatabasePersistor {
             ColumnFamilyDescriptor::new("references", Options::default()),
         ];
         let persistor = Self {
-            db: Mutex::new(
+            db: RwLock::new(
                 DB::open_cf_descriptors(&opts, path, cfs).expect("Failed to open database"),
             ),
         };
@@ -322,7 +534,7 @@ impl DatabasePersistor {
             let mut handles: Vec<Word> = Vec::new();
             let db = persistor
                 .db
-                .lock()
+                .read()
                 .expect("Failed to acquire database lock");
             let mut iter = db.raw_iterator_cf(
                 db.cf_handle("roots")
@@ -352,32 +564,29 @@ impl DatabasePersistor {
         persistor
     }
 
-    fn reference_increment(&self, node: Word) {
-        let db = self.db.lock().expect("Failed to acquire db lock");
+    fn reference_increment(&self, db: &DB, node: Word) {
         let references = db
             .cf_handle("references")
             .expect("Failed to get references handle");
         match db.get_cf(references, node) {
             Ok(Some(count)) => {
-                db.put_cf(
-                    references,
-                    node,
-                    (usize::from_ne_bytes(count.try_into().expect("Invalid count bytes")) + 1)
-                        .to_ne_bytes(),
-                )
-                .expect("Failed to increment reference count");
+                let count_old =
+                    usize::from_ne_bytes(count.try_into().expect("Invalid count bytes"));
+                let count_new = count_old + 1;
+                db.put_cf(references, node, count_new.to_ne_bytes())
+                    .expect("Failed to increment reference count");
             }
-            Ok(None) => db
-                .put_cf(references, node, (1 as usize).to_ne_bytes())
-                .expect("Failed to set initial reference count"),
+            Ok(None) => {
+                db.put_cf(references, node, (1 as usize).to_ne_bytes())
+                    .expect("Failed to set initial reference count");
+            }
             Err(e) => {
                 panic! {"{}", e}
             }
         };
     }
 
-    fn reference_decrement(&self, node: Word) {
-        let db = self.db.lock().expect("Failed to acquire db lock");
+    fn reference_decrement(&self, db: &DB, node: Word) {
         let branches = db
             .cf_handle("branches")
             .expect("Failed to get branches handle");
@@ -391,8 +600,9 @@ impl DatabasePersistor {
             .expect("Failed to get reference count")
         {
             Some(count_old) => {
-                let count_new =
-                    usize::from_ne_bytes(count_old.try_into().expect("Invalid count bytes")) - 1;
+                let count_old =
+                    usize::from_ne_bytes(count_old.try_into().expect("Invalid count bytes"));
+                let count_new = count_old - 1;
                 if count_new > 0 {
                     db.put_cf(references, node, count_new.to_ne_bytes())
                         .expect("Failed to update reference count");
@@ -400,13 +610,14 @@ impl DatabasePersistor {
                     db.delete_cf(references, node)
                         .expect("Failed to delete reference");
                     if let Some(value) = db.get_cf(branches, node).expect("Failed to get branch") {
-                        let left = &value[..SIZE].try_into().expect("Invalid left node bytes");
-                        let right = &value[SIZE..SIZE * 2].try_into().expect("Invalid right node bytes");
+                        let left: Word = value[..SIZE].try_into().expect("Invalid left node bytes");
+                        let right: Word = value[SIZE..SIZE * 2]
+                            .try_into()
+                            .expect("Invalid right node bytes");
                         db.delete_cf(branches, node)
                             .expect("Failed to delete branch");
-                        drop(db);
-                        self.reference_decrement(*left);
-                        self.reference_decrement(*right);
+                        self.reference_decrement(db, left);
+                        self.reference_decrement(db, right);
                     } else {
                         if let Some(_) = db.get_cf(leaves, node).expect("Failed to get leaf") {
                             db.delete_cf(leaves, node).expect("Failed to delete leaf");
@@ -421,12 +632,139 @@ impl DatabasePersistor {
             None => {}
         };
     }
+
+    fn merge_collect(
+        &self,
+        db: &DB,
+        source: &dyn Persistor,
+        node: Word,
+        plan: &mut MergePlan,
+        seen: &mut HashSet<Word>,
+    ) -> Result<(), PersistorAccessError> {
+        if node == [0 as u8; SIZE] || !seen.insert(node) {
+            return Ok(());
+        }
+
+        let branches = db
+            .cf_handle("branches")
+            .expect("Failed to get branches handle");
+        let leaves = db.cf_handle("leaves").expect("Failed to get leaves handle");
+        let stumps = db.cf_handle("stumps").expect("Failed to get stumps handle");
+
+        if plan.branches.contains_key(&node)
+            || plan.leaves.contains_key(&node)
+            || plan.stumps.contains_key(&node)
+        {
+            return Ok(());
+        }
+
+        if db.get_cf(leaves, node).expect("Failed to get leaf").is_some()
+            || db.get_cf(stumps, node).expect("Failed to get stump").is_some()
+            || db.get_cf(branches, node).expect("Failed to get branch").is_some()
+        {
+            return Ok(());
+        }
+
+        if let Ok(content) = source.leaf_get(node) {
+            plan.leaves.insert(node, content);
+            return Ok(());
+        }
+
+        if let Ok(digest) = source.stump_get(node) {
+            plan.stumps.insert(node, digest);
+            return Ok(());
+        }
+
+        if let Ok((left, right, digest)) = source.branch_get(node) {
+            self.merge_collect(db, source, left, plan, seen)?;
+            self.merge_collect(db, source, right, plan, seen)?;
+            plan.branches.insert(node, (left, right, digest));
+            plan.delta_add(left, 1);
+            plan.delta_add(right, 1);
+            return Ok(());
+        }
+
+        Ok(())
+    }
+
+    fn merged_branch(
+        &self,
+        db: &DB,
+        node: Word,
+        plan: &MergePlan,
+    ) -> Result<Option<(Word, Word, Word)>, PersistorAccessError> {
+        if let Some(branch) = plan.branches.get(&node) {
+            return Ok(Some(*branch));
+        }
+
+        let branches = db
+            .cf_handle("branches")
+            .expect("Failed to get branches handle");
+        match db.get_cf(branches, node) {
+            Ok(Some(value)) => {
+                let left = value[..SIZE].try_into().expect("Invalid left branch size");
+                let right = value[SIZE..SIZE * 2]
+                    .try_into()
+                    .expect("Invalid right branch size");
+                let digest = value[SIZE * 2..]
+                    .try_into()
+                    .expect("Invalid digest branch size");
+                Ok(Some((left, right, digest)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(PersistorAccessError(format!("{}", e))),
+        }
+    }
+
+    fn base_refcount(&self, db: &DB, node: Word) -> Result<isize, PersistorAccessError> {
+        let references = db
+            .cf_handle("references")
+            .expect("Failed to get references handle");
+        match db.get_cf(references, node) {
+            Ok(Some(count)) => Ok(
+                usize::from_ne_bytes(count.try_into().expect("Invalid count bytes")) as isize,
+            ),
+            Ok(None) => Ok(0),
+            Err(e) => Err(PersistorAccessError(format!("{}", e))),
+        }
+    }
+
+    fn release_plan(
+        &self,
+        db: &DB,
+        node: Word,
+        plan: &mut MergePlan,
+    ) -> Result<(), PersistorAccessError> {
+        if node == [0 as u8; SIZE] {
+            return Ok(());
+        }
+
+        let effective = self.base_refcount(db, node)? + plan.deltas.get(&node).copied().unwrap_or(0);
+        if effective <= 0 {
+            return Ok(());
+        }
+
+        plan.delta_add(node, -1);
+
+        if effective == 1 {
+            if !plan.deletes.insert(node) {
+                return Ok(());
+            }
+
+            if let Some((left, right, _)) = self.merged_branch(db, node, plan)? {
+                self.release_plan(db, left, plan)?;
+                self.release_plan(db, right, plan)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Persistor for DatabasePersistor {
     fn root_list(&self) -> Vec<Word> {
         let mut handles: Vec<Word> = Vec::new();
-        let db = self.db.lock().expect("Failed to acquire db lock");
+        let db = self.db.read().expect("Failed to acquire db lock");
         let roots = db
             .cf_handle("roots")
             .expect("Failed to get roots column family");
@@ -452,7 +790,7 @@ impl Persistor for DatabasePersistor {
         root_marked[..SIZE].copy_from_slice(&root);
         root_marked[SIZE] = true as u8;
 
-        let db = self.db.lock().expect("Failed to acquire db lock");
+        let db = self.db.write().expect("Failed to acquire db lock");
         let roots = db
             .cf_handle("roots")
             .expect("Failed to get roots column family");
@@ -462,10 +800,9 @@ impl Persistor for DatabasePersistor {
                 handle
             ))),
             Ok(None) => {
+                self.reference_increment(&db, root);
                 db.put_cf(roots, handle, root_marked)
                     .expect("Failed to put root in db");
-                drop(db);
-                self.reference_increment(root);
                 Ok(handle)
             }
             Err(e) => Err(PersistorAccessError(format!("{}", e))),
@@ -473,34 +810,34 @@ impl Persistor for DatabasePersistor {
     }
 
     fn root_temp(&self, root: Word) -> Result<Word, PersistorAccessError> {
+        let db = self.db.write().expect("Failed to acquire db lock");
+        let roots = db
+            .cf_handle("roots")
+            .expect("Failed to get roots column family");
         let mut root_marked = [0 as u8; SIZE + 1];
         root_marked[..SIZE].copy_from_slice(&root);
         root_marked[SIZE] = false as u8;
 
-        let mut handle: Word = [0 as u8; 32];
-        rand::thread_rng().fill_bytes(&mut handle);
-        let db = self.db.lock().expect("Failed to acquire db lock");
-        let roots = db
-            .cf_handle("roots")
-            .expect("Failed to get roots column family");
-        match db.get_cf(roots, handle) {
+        let mut handle_: Word = [0 as u8; 32];
+        rand::thread_rng().fill_bytes(&mut handle_);
+
+        match db.get_cf(roots, handle_) {
             Ok(Some(_)) => Err(PersistorAccessError(format!(
                 "Handle {:?} already exists",
-                handle
+                handle_
             ))),
             Ok(None) => {
-                db.put_cf(roots, handle, root_marked)
+                self.reference_increment(&db, root);
+                db.put_cf(roots, handle_, root_marked)
                     .expect("Failed to put root in db");
-                drop(db);
-                self.reference_increment(root);
-                Ok(handle)
+                Ok(handle_)
             }
             Err(e) => Err(PersistorAccessError(format!("{}", e))),
         }
     }
 
     fn root_get(&self, handle: Word) -> Result<Word, PersistorAccessError> {
-        let db = self.db.lock().expect("Failed to acquire db lock");
+        let db = self.db.read().expect("Failed to acquire db lock");
         let roots = db.cf_handle("roots").expect("Failed to get roots handle");
         match db.get_cf(roots, handle) {
             Ok(Some(root_marked)) => Ok(((*root_marked)[..SIZE])
@@ -514,21 +851,84 @@ impl Persistor for DatabasePersistor {
         }
     }
 
-    fn root_set(&self, handle: Word, old: Word, new: Word) -> Result<Word, PersistorAccessError> {
-        let db = self.db.lock().expect("Failed to acquire db lock");
+    fn root_set(
+        &self,
+        handle: Word,
+        old: Word,
+        new: Word,
+        source: &dyn Persistor,
+    ) -> Result<Word, PersistorAccessError> {
+        let db = self.db.write().expect("Failed to acquire db lock");
         let roots = db.cf_handle("roots").expect("Failed to get roots handle");
         match db.get_cf(roots, handle) {
             Ok(Some(root_marked)) => match root_marked[SIZE] != false as u8 {
                 true => match root_marked[..SIZE] == old.to_vec() {
                     true => {
+                        let mut plan = MergePlan::new();
+                        let mut seen = HashSet::new();
+                        self.merge_collect(&db, source, new, &mut plan, &mut seen)?;
+                        plan.delta_add(new, 1);
+                        self.release_plan(&db, old, &mut plan)?;
+
                         let mut new_marked = [0 as u8; SIZE + 1];
                         new_marked[..SIZE].copy_from_slice(&new);
                         new_marked[SIZE] = true as u8;
-                        db.put_cf(roots, handle, new_marked)
-                            .expect("Failed to put root");
-                        drop(db);
-                        self.reference_increment(new);
-                        self.reference_decrement(old);
+
+                        let branches = db
+                            .cf_handle("branches")
+                            .expect("Failed to get branches handle");
+                        let leaves = db.cf_handle("leaves").expect("Failed to get leaves handle");
+                        let stumps = db.cf_handle("stumps").expect("Failed to get stumps handle");
+                        let references = db
+                            .cf_handle("references")
+                            .expect("Failed to get references handle");
+
+                        let mut batch = WriteBatch::default();
+
+                        for (node, content) in plan.leaves.iter() {
+                            batch.put_cf(leaves, node, content);
+                        }
+
+                        for (node, digest) in plan.stumps.iter() {
+                            batch.put_cf(stumps, node, digest);
+                        }
+
+                        for (node, (left, right, digest)) in plan.branches.iter() {
+                            let mut joined = [0 as u8; SIZE * 3];
+                            joined[..SIZE].copy_from_slice(left);
+                            joined[SIZE..SIZE * 2].copy_from_slice(right);
+                            joined[SIZE * 2..].copy_from_slice(digest);
+                            batch.put_cf(branches, node, joined);
+                        }
+
+                        for (node, delta) in plan.deltas.iter() {
+                            let base = self.base_refcount(&db, *node)?;
+                            let next = base + delta;
+                            if next > 0 {
+                                batch.put_cf(references, node, (next as usize).to_ne_bytes());
+                            } else {
+                                batch.delete_cf(references, node);
+                            }
+                        }
+
+                        for node in plan.deletes.iter() {
+                            if plan.branches.contains_key(node)
+                                || db.get_cf(branches, node).expect("Failed to get branch").is_some()
+                            {
+                                batch.delete_cf(branches, node);
+                            } else if plan.leaves.contains_key(node)
+                                || db.get_cf(leaves, node).expect("Failed to get leaf").is_some()
+                            {
+                                batch.delete_cf(leaves, node);
+                            } else if plan.stumps.contains_key(node)
+                                || db.get_cf(stumps, node).expect("Failed to get stump").is_some()
+                            {
+                                batch.delete_cf(stumps, node);
+                            }
+                        }
+
+                        batch.put_cf(roots, handle, new_marked);
+                        db.write(batch).expect("Failed to apply root merge batch");
                         Ok(handle)
                     }
                     false => Err(PersistorAccessError(format!(
@@ -550,15 +950,13 @@ impl Persistor for DatabasePersistor {
     }
 
     fn root_delete(&self, handle: Word) -> Result<(), PersistorAccessError> {
-        let db = self.db.lock().expect("Failed to acquire db lock");
+        let db = self.db.write().expect("Failed to acquire db lock");
         let roots = db.cf_handle("roots").expect("Failed to get roots handle");
         match db.get_cf(roots, handle) {
             Ok(Some(root_marked)) => {
+                let root: Word = root_marked[..SIZE].try_into().expect("Invalid root size");
                 db.delete_cf(roots, handle).expect("Failed to delete root");
-                drop(db);
-                self.reference_decrement(
-                    root_marked[..SIZE].try_into().expect("Invalid root size"),
-                );
+                self.reference_decrement(&db, root);
                 Ok(())
             }
             Ok(None) => Err(PersistorAccessError(format!(
@@ -582,21 +980,20 @@ impl Persistor for DatabasePersistor {
 
         let branch = Sha256::digest(joined);
 
-        let db = self.db.lock().expect("Failed to acquire db lock");
+        let db = self.db.write().expect("Failed to acquire db lock");
         let branches = db
             .cf_handle("branches")
             .expect("Failed to get branches handle");
         db.put_cf(branches, branch, joined)
             .expect("Failed to put branch");
-        drop(db);
-        self.reference_increment(left);
-        self.reference_increment(right);
+        self.reference_increment(&db, left);
+        self.reference_increment(&db, right);
 
         Ok(Word::from(branch))
     }
 
     fn branch_get(&self, branch: Word) -> Result<(Word, Word, Word), PersistorAccessError> {
-        let db = self.db.lock().expect("Failed to acquire db lock");
+        let db = self.db.read().expect("Failed to acquire db lock");
         let branches = db
             .cf_handle("branches")
             .expect("Failed to get branches handle");
@@ -622,7 +1019,7 @@ impl Persistor for DatabasePersistor {
 
     fn leaf_set(&self, content: Vec<u8>) -> Result<Word, PersistorAccessError> {
         let leaf = Word::from(Sha256::digest(Sha256::digest(&content)));
-        let db = self.db.lock().expect("Failed to acquire db lock");
+        let db = self.db.write().expect("Failed to acquire db lock");
         let leaves = db.cf_handle("leaves").expect("Failed to get leaves handle");
         db.put_cf(leaves, leaf, content.clone())
             .expect("Failed to put leaf");
@@ -630,7 +1027,7 @@ impl Persistor for DatabasePersistor {
     }
 
     fn leaf_get(&self, leaf: Word) -> Result<Vec<u8>, PersistorAccessError> {
-        let db = self.db.lock().expect("Failed to acquire db lock");
+        let db = self.db.read().expect("Failed to acquire db lock");
         let leaves = db.cf_handle("leaves").expect("Failed to get leaves handle");
         match db.get_cf(leaves, leaf) {
             Ok(Some(content)) => {
@@ -644,7 +1041,7 @@ impl Persistor for DatabasePersistor {
 
     fn stump_set(&self, digest: Word) -> Result<Word, PersistorAccessError> {
         let stump = Word::from(Sha256::digest(Vec::from(digest)));
-        let db = self.db.lock().expect("Failed to acquire db lock");
+        let db = self.db.write().expect("Failed to acquire db lock");
         let stumps = db.cf_handle("stumps").expect("Failed to get stumps handle");
         db.put_cf(stumps, stump, digest)
             .expect("Failed to put stump");
@@ -652,7 +1049,7 @@ impl Persistor for DatabasePersistor {
     }
 
     fn stump_get(&self, stump: Word) -> Result<Word, PersistorAccessError> {
-        let db = self.db.lock().expect("Failed to acquire db lock");
+        let db = self.db.read().expect("Failed to acquire db lock");
         let stumps = db.cf_handle("stumps").expect("Failed to get stumps handle");
         match db.get_cf(stumps, stump) {
             Ok(Some(digest)) => {
@@ -672,13 +1069,16 @@ impl Persistor for DatabasePersistor {
 
 #[cfg(test)]
 mod tests {
-    use super::{DatabasePersistor, MemoryPersistor, Persistor, Word, SIZE};
-    use rocksdb::{IteratorMode, DB};
+    use super::{DatabasePersistor, MemoryPersistor, Persistor, SIZE, Word};
+    use rocksdb::{DB, IteratorMode};
     use std::fs;
-    use std::sync::Mutex;
+    use std::sync::RwLock;
 
     fn test_persistence(persistor: Box<dyn Persistor>) {
         let zeros: Word = [0 as u8; SIZE];
+        let handle = persistor
+            .root_new(zeros, zeros)
+            .expect("Failed to create new root");
 
         assert!(
             persistor
@@ -695,13 +1095,7 @@ mod tests {
             persistor
                 .root_get(
                     persistor
-                        .root_set(
-                            persistor
-                                .root_new(zeros, zeros)
-                                .expect("Failed to create new root"),
-                            zeros,
-                            zeros,
-                        )
+                        .root_set(handle, zeros, zeros, persistor.as_ref())
                         .expect("Failed to set root"),
                 )
                 .expect("Failed to get root")
@@ -768,11 +1162,11 @@ mod tests {
             .root_new(handle, branch_c)
             .expect("Failed to create new root");
 
-        assert!(persistor.roots.lock().expect("Failed to lock roots").len() == 1);
+        assert!(persistor.roots.read().expect("Failed to lock roots").len() == 1);
         assert!(
             persistor
                 .branches
-                .lock()
+                .read()
                 .expect("Failed to lock branches")
                 .len()
                 == 3
@@ -780,7 +1174,7 @@ mod tests {
         assert!(
             persistor
                 .leaves
-                .lock()
+                .read()
                 .expect("Failed to lock leaves")
                 .len()
                 == 3
@@ -788,7 +1182,7 @@ mod tests {
         assert!(
             persistor
                 .stumps
-                .lock()
+                .read()
                 .expect("Failed to lock leaves")
                 .len()
                 == 1
@@ -796,7 +1190,7 @@ mod tests {
         assert!(
             persistor
                 .references
-                .lock()
+                .read()
                 .expect("Failed to lock references")
                 .len()
                 == 7
@@ -807,14 +1201,14 @@ mod tests {
             .branch_set(leaf_2, leaf_3, zeros)
             .expect("Failed to set branch D");
         persistor
-            .root_set(handle, branch_c, branch_d)
+            .root_set(handle, branch_c, branch_d, &persistor)
             .expect("Failed to set root");
 
-        assert!(persistor.roots.lock().expect("Failed to lock roots").len() == 1);
+        assert!(persistor.roots.read().expect("Failed to lock roots").len() == 1);
         assert!(
             persistor
                 .branches
-                .lock()
+                .read()
                 .expect("Failed to lock branches")
                 .len()
                 == 1
@@ -822,7 +1216,7 @@ mod tests {
         assert!(
             persistor
                 .leaves
-                .lock()
+                .read()
                 .expect("Failed to lock leaves")
                 .len()
                 == 2
@@ -830,7 +1224,7 @@ mod tests {
         assert!(
             persistor
                 .stumps
-                .lock()
+                .read()
                 .expect("Failed to lock stumps")
                 .len()
                 == 0
@@ -838,7 +1232,7 @@ mod tests {
         assert!(
             persistor
                 .references
-                .lock()
+                .read()
                 .expect("Failed to lock references")
                 .len()
                 == 3
@@ -874,8 +1268,8 @@ mod tests {
             .root_new(handle, branch_c)
             .expect("Failed to create new root");
 
-        let cf_count = |mdb: &Mutex<DB>, cf| {
-            let db_ = mdb.lock().expect("Failed to lock database");
+        let cf_count = |db: &RwLock<DB>, cf| {
+            let db_ = db.read().expect("Failed to lock database");
             db_.iterator_cf(
                 db_.cf_handle(cf).expect("Failed to get CF handle"),
                 IteratorMode::Start,
@@ -896,7 +1290,7 @@ mod tests {
             .branch_set(leaf_2, leaf_3, zeros)
             .expect("Failed to set branch D");
         persistor
-            .root_set(handle, branch_c, branch_d)
+            .root_set(handle, branch_c, branch_d, &persistor)
             .expect("Failed to set root");
 
         {
@@ -908,5 +1302,85 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(db);
+    }
+
+    fn test_root_set_merge_from_source(persistor: Box<dyn Persistor>) {
+        let zeros: Word = [0 as u8; SIZE];
+        let handle: Word = [1 as u8; SIZE];
+        let target = Box::new(MemoryPersistor::new());
+
+        let leaf_0 = persistor.leaf_set(vec![0]).expect("Failed to set leaf 0");
+        let leaf_1 = persistor.leaf_set(vec![1]).expect("Failed to set leaf 1");
+        let branch = persistor
+            .branch_set(leaf_0, leaf_1, zeros)
+            .expect("Failed to set source branch");
+
+        target
+            .root_new(handle, zeros)
+            .expect("Failed to create target root");
+        target
+            .root_set(handle, zeros, branch, persistor.as_ref())
+            .expect("Failed to merge root from source");
+
+        assert!(target.root_get(handle).expect("Failed to get target root") == branch);
+        assert!(target.branch_get(branch).expect("Failed to get merged branch") == (leaf_0, leaf_1, zeros));
+        assert!(target.leaf_get(leaf_0).expect("Failed to get merged leaf 0") == vec![0]);
+        assert!(target.leaf_get(leaf_1).expect("Failed to get merged leaf 1") == vec![1]);
+    }
+
+    #[test]
+    fn test_memory_root_set_merge_from_source() {
+        test_root_set_merge_from_source(Box::new(MemoryPersistor::new()));
+    }
+
+    #[test]
+    fn test_database_root_set_merge_from_source() {
+        let db = ".test-database-root-set-merge-from-source";
+        let _ = fs::remove_dir_all(db);
+        test_root_set_merge_from_source(Box::new(DatabasePersistor::new(db)));
+        let _ = fs::remove_dir_all(db);
+    }
+
+    #[test]
+    fn test_memory_root_set_merge_from_source_garbage() {
+        let zeros: Word = [0 as u8; SIZE];
+        let handle: Word = [0 as u8; SIZE];
+        let target = MemoryPersistor::new();
+        let source = MemoryPersistor::new();
+
+        let leaf_0 = target.leaf_set(vec![0]).expect("Failed to set target leaf 0");
+        let leaf_1 = target.leaf_set(vec![1]).expect("Failed to set target leaf 1");
+        let leaf_2 = target.leaf_set(vec![2]).expect("Failed to set target leaf 2");
+        let stump_0 = target
+            .stump_set([0 as u8; SIZE])
+            .expect("Failed to set target stump 0");
+        let branch_a = target
+            .branch_set(leaf_0, leaf_1, zeros)
+            .expect("Failed to set target branch A");
+        let branch_b = target
+            .branch_set(branch_a, leaf_2, zeros)
+            .expect("Failed to set target branch B");
+        let branch_c = target
+            .branch_set(branch_b, stump_0, zeros)
+            .expect("Failed to set target branch C");
+        target
+            .root_new(handle, branch_c)
+            .expect("Failed to create target root");
+
+        let leaf_2_source = source.leaf_set(vec![2]).expect("Failed to set source leaf 2");
+        let leaf_3_source = source.leaf_set(vec![3]).expect("Failed to set source leaf 3");
+        let branch_d = source
+            .branch_set(leaf_2_source, leaf_3_source, zeros)
+            .expect("Failed to set source branch D");
+
+        target
+            .root_set(handle, branch_c, branch_d, &source)
+            .expect("Failed to merge source root into target");
+
+        assert!(target.roots.read().expect("Failed to lock roots").len() == 1);
+        assert!(target.branches.read().expect("Failed to lock branches").len() == 1);
+        assert!(target.leaves.read().expect("Failed to lock leaves").len() == 2);
+        assert!(target.stumps.read().expect("Failed to lock stumps").len() == 0);
+        assert!(target.references.read().expect("Failed to lock references").len() == 3);
     }
 }

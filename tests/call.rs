@@ -63,7 +63,7 @@ fn test_record() {
     assert1(
         format!(
             "(sync-call '{} #t (hex-string->byte-vector \"{}\"))",
-            "(begin (define *sync-state* (sync-cons (sync-car *sync-state*) #u(2))) #t)", record2,
+            "(begin (set! *sync-state* (sync-cons (sync-car *sync-state*) #u(2))) #t)", record2,
         )
         .as_str(),
         "#t",

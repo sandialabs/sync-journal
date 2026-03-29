@@ -1,19 +1,23 @@
 #![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))]
 
 pub use crate::config::Config;
-use crate::evaluator::{Evaluator, Primitive, Type, json2lisp, obj2str, lisp2json};
+use crate::evaluator::{Evaluator, Primitive, Type, json2lisp, lisp2json, obj2str};
 use crate::extensions::crypto::{
     primitive_s7_crypto_generate, primitive_s7_crypto_sign, primitive_s7_crypto_verify,
 };
 use crate::extensions::system::{primitive_s7_system_time_unix, primitive_s7_system_time_utc};
-use crate::persistor::{MemoryPersistor, PERSISTOR, Persistor, PersistorAccessError};
+use crate::persistor::{MemoryPersistor, PERSISTOR, Persistor};
+use crate::cache::{
+    strict_cache_get, strict_cache_put, OverlayPersistor, ResolvedNode, ResolveSource,
+    resolve_branch_with, resolve_node_with, resolve_stump_with,
+};
 pub use crate::persistor::{SIZE, Word};
 use libc;
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use evaluator as s7;
@@ -21,6 +25,7 @@ use sha2::{Digest, Sha256};
 use std::ffi::{CStr, CString};
 
 mod config;
+mod cache;
 pub mod evaluator;
 mod persistor;
 mod extensions {
@@ -30,35 +35,49 @@ mod extensions {
 
 pub static JOURNAL: Lazy<Journal> = Lazy::new(|| Journal::new());
 
-const SYNC_NODE_TAG: i64 = 0;
+pub(crate) const SYNC_NODE_TAG: i64 = 0;
 
 const GENESIS_STR: &str = "(lambda (*sync-state* query) (cons (eval query) *sync-state*))";
 
-pub const NULL: Word = [
+pub(crate) const NULL: Word = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
-struct Session {
-    record: Word,
-    persistor: MemoryPersistor,
-    cache: Arc<Mutex<HashMap<(String, String, Vec<u8>), Vec<u8>>>>,
+pub(crate) struct Session {
+    pub(crate) record: Word,
+    pub(crate) state: Word,
+    pub(crate) persistor: MemoryPersistor,
+    pub(crate) cache: Arc<Mutex<HashMap<(String, String, Vec<u8>), Vec<u8>>>>,
+    pub(crate) strict_env_loc: Option<s7::s7_int>,
+    pub(crate) strict_loader_locs: HashMap<Word, s7::s7_int>,
+    pub(crate) strict_overlay_persistor: Option<MemoryPersistor>,
+    pub(crate) strict_overlay_handles: HashSet<Word>,
+    pub(crate) external_called: bool,
 }
 
 impl Session {
     fn new(
         record: Word,
+        state: Word,
         persistor: MemoryPersistor,
         cache: Arc<Mutex<HashMap<(String, String, Vec<u8>), Vec<u8>>>>,
     ) -> Self {
         Self {
             record,
+            state,
             persistor,
             cache,
+            strict_env_loc: None,
+            strict_loader_locs: HashMap::new(),
+            strict_overlay_persistor: None,
+            strict_overlay_handles: HashSet::new(),
+            external_called: false,
         }
     }
 }
 
-static SESSIONS: Lazy<Mutex<HashMap<usize, Session>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+pub(crate) static SESSIONS: Lazy<RwLock<HashMap<usize, Session>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 struct CallOnDrop<F: FnMut()>(F);
 
@@ -72,7 +91,7 @@ impl<F: FnMut()> Drop for CallOnDrop<F> {
 pub struct JournalAccessError(pub Word);
 
 static LOCK: Mutex<()> = Mutex::new(());
-static RUNS: usize = 3;
+static RUNS: usize = 1;
 
 fn escape_scheme_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\"', "\\\"")
@@ -170,25 +189,19 @@ impl Journal {
                 match lisp2json(result.as_str()) {
                     Ok(json_result) => json_result,
                     Err(_) => {
-                        log::warn!(
-                            "Failed to parse Scheme to JSON. Result: {}",
-                            result
-                        );
+                        log::warn!("Failed to parse Scheme to JSON. Result: {}", result);
                         lisp2json("(error 'parse-error \"Failed to parse Scheme to JSON\")")
                     }
-                        .expect("Error parsing the JSON error message"),
+                    .expect("Error parsing the JSON error message"),
                 }
             }
             Err(_) => {
                 let query_str = serde_json::to_string(&query)
                     .unwrap_or_else(|_| "<unprintable json>".to_string());
-                log::warn!(
-                    "Failed to parse JSON to Scheme. Query: {}",
-                    query_str
-                );
+                log::warn!("Failed to parse JSON to Scheme. Query: {}", query_str);
                 lisp2json("(error 'parse-error \"Failed to parse JSON to Scheme\")")
             }
-                .expect("Error parsing the JSON error message"),
+            .expect("Error parsing the JSON error message"),
         }
     }
 
@@ -206,10 +219,7 @@ impl Journal {
         match lisp2json(query) {
             Ok(json_result) => json_result,
             Err(_) => {
-                log::warn!(
-                    "Failed to parse Scheme to JSON. Query: {}",
-                    query
-                );
+                log::warn!("Failed to parse Scheme to JSON. Query: {}", query);
                 lisp2json("(error 'parse-error \"Failed to parse Scheme to JSON\")")
             }
             .expect("Error parsing the JSON error message"),
@@ -232,10 +242,7 @@ impl Journal {
             Err(_) => {
                 let query_str = serde_json::to_string(&query)
                     .unwrap_or_else(|_| "<unprintable json>".to_string());
-                log::warn!(
-                    "Failed to parse JSON to Scheme. Query: {}",
-                    query_str
-                );
+                log::warn!("Failed to parse JSON to Scheme. Query: {}", query_str);
                 "(error 'parse-error \"Failed to parse JSON to Scheme\")".to_string()
             }
         }
@@ -258,29 +265,19 @@ impl Journal {
                 None
             };
 
-            let genesis_func = PERSISTOR
-                .leaf_get(
-                    PERSISTOR
-                        .branch_get(
-                            PERSISTOR
-                                .root_get(record)
-                                .expect("Failed to get root record"),
-                        )
-                        .expect("Failed to get genesis branch")
-                        .0,
-                )
-                .expect("Failed to get genesis function")
-                .to_vec();
-
-            let genesis_str = String::from_utf8_lossy(&genesis_func);
-
-            let state_old = PERSISTOR
-                .root_get(record)
-                .expect("Failed to get current state");
-
-            let record_temp = PERSISTOR
-                .root_temp(state_old)
-                .expect("Failed to create temporary record");
+            let (state_old, record_temp) = {
+                let _lock2 = match _lock1 {
+                    Some(_) => None,
+                    None => Some(LOCK.lock().expect("Failed to acquire secondary lock")),
+                };
+                let state_old = PERSISTOR
+                    .root_get(record)
+                    .expect("Failed to get current state");
+                let record_temp = PERSISTOR
+                    .root_temp(state_old)
+                    .expect("Failed to create temporary record");
+                (state_old, record_temp)
+            };
 
             let _record_dropper = CallOnDrop(|| {
                 PERSISTOR
@@ -288,14 +285,16 @@ impl Journal {
                     .expect("Failed to delete temporary record");
             });
 
-            let state_str = format!(
-                "#u({})",
-                state_old
-                    .iter()
-                    .map(|&num| num.to_string())
-                    .collect::<Vec<String>>()
-                    .join(" "),
-            );
+            let genesis_branch = PERSISTOR
+                .branch_get(state_old)
+                .expect("Failed to get genesis branch");
+
+            let genesis_func = PERSISTOR
+                .leaf_get(genesis_branch.0)
+                .expect("Failed to get genesis function")
+                .to_vec();
+
+            let genesis_str = String::from_utf8_lossy(&genesis_func);
 
             let evaluator = Evaluator::new(
                 vec![(SYNC_NODE_TAG, type_s7_sync_node())]
@@ -304,7 +303,7 @@ impl Journal {
                 vec![
                     primitive_s7_sync_hash(),
                     primitive_s7_sync_null(),
-                    primitive_s7_sync_node(),
+                    primitive_s7_sync_state(),
                     primitive_s7_sync_stub(),
                     primitive_s7_sync_is_node(),
                     primitive_s7_sync_is_pair(),
@@ -319,6 +318,7 @@ impl Journal {
                     primitive_s7_sync_delete(),
                     primitive_s7_sync_all(),
                     primitive_s7_sync_call(),
+                    primitive_s7_sync_eval(),
                     primitive_s7_sync_remote(),
                     primitive_s7_sync_http(),
                     primitive_s7_crypto_generate(),
@@ -329,38 +329,65 @@ impl Journal {
                 ],
             );
 
+            let persistor_initial = MemoryPersistor::new();
+
+            match PERSISTOR.branch_get(state_old) {
+                Ok((left, right, digest)) => persistor_initial
+                    .branch_set(left, right, digest)
+                    .expect("Could not set state root branch to session persistor"),
+                Err(_) => panic!("Could not set state root branch to session persistor"),
+            };
+
             SESSIONS
-                .lock()
+                .write()
                 .expect("Failed to acquire sessions lock")
                 .insert(
                     evaluator.sc as usize,
-                    Session::new(record, MemoryPersistor::new(), cache.clone()),
+                    Session::new(record, state_old, persistor_initial, cache.clone()),
                 );
 
             let _session_dropper = CallOnDrop(|| {
                 let mut session = SESSIONS
-                    .lock()
+                    .write()
                     .expect("Failed to acquire sessions lock for cleanup");
-                session.remove(&(evaluator.sc as usize));
+                if let Some(session) = session.remove(&(evaluator.sc as usize)) {
+                    if let Some(loc) = session.strict_env_loc {
+                        unsafe {
+                            s7::s7_gc_unprotect_at(evaluator.sc, loc);
+                        }
+                    }
+                    for loc in session.strict_loader_locs.into_values() {
+                        unsafe {
+                            s7::s7_gc_unprotect_at(evaluator.sc, loc);
+                        }
+                    }
+                    if let Some(overlay) = session.strict_overlay_persistor {
+                        for handle in session.strict_overlay_handles {
+                            let _ = overlay.root_delete(handle);
+                        }
+                    }
+                }
             });
 
             let expr = format!(
-                "((eval {}) (sync-node {}) (read (open-input-string \"{}\")))",
+                "((eval {}) (sync-state) (read (open-input-string \"{}\")))",
                 genesis_str,
-                state_str,
                 escape_scheme_string(query),
             );
 
             let result = evaluator.evaluate(expr.as_str());
             runs += 1;
 
-            let persistor = {
-                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-                &session
+            let (persistor, overlay_persistor, external_called) = {
+                let session = SESSIONS.read().expect("Failed to acquire sessions lock");
+                let session = session
                     .get(&(evaluator.sc as usize))
-                    .expect("Session not found in SESSIONS map")
-                    .persistor
-                    .clone()
+                    .expect("Session not found in SESSIONS map");
+                (
+                    session.persistor.clone(),
+                    session.strict_overlay_persistor.clone(),
+                    session.external_called,
+                )
             };
 
             let (output, state_new) = match result.starts_with("(error '") {
@@ -387,6 +414,20 @@ impl Journal {
                 },
             };
 
+            if external_called && state_old != state_new {
+                let output = String::from(
+                    "(error 'external-state-error \"Request called an external function and changed state\")",
+                );
+                warn_on_error_result(query, output.as_str());
+                debug!(
+                    "Completed ({:?}) {} -> {}",
+                    start.elapsed(),
+                    query.chars().take(128).collect::<String>(),
+                    output,
+                );
+                return output;
+            }
+
             match state_old == state_new {
                 true => {
                     warn_on_error_result(query, output.as_str());
@@ -404,44 +445,6 @@ impl Journal {
                         .expect("Failed to get record state for comparison")
                 {
                     true => {
-                        fn iterate(
-                            source: &MemoryPersistor,
-                            start_node: Word,
-                        ) -> Result<(), PersistorAccessError> {
-                            let mut stack = vec![start_node];
-
-                            while let Some(node) = stack.pop() {
-                                if node == NULL {
-                                    continue;
-                                } else if let Ok(_) = PERSISTOR.leaf_get(node) {
-                                    continue;
-                                } else if let Ok(_) = PERSISTOR.stump_get(node) {
-                                    continue;
-                                } else if let Ok(_) = PERSISTOR.branch_get(node) {
-                                    continue;
-                                } else if let Ok(content) = source.leaf_get(node) {
-                                    PERSISTOR
-                                        .leaf_set(content)
-                                        .expect("Failed to set leaf content");
-                                } else if let Ok(digest) = source.stump_get(node) {
-                                    PERSISTOR.stump_set(digest).expect("Failed to set stump");
-                                } else if let Ok((left, right, digest)) = source.branch_get(node) {
-                                    PERSISTOR
-                                        .branch_set(left, right, digest)
-                                        .expect("Failed to set branch");
-                                    stack.push(right);
-                                    stack.push(left);
-                                } else {
-                                    return Err(PersistorAccessError(format!(
-                                        "Dangling branch {:?}",
-                                        node
-                                    )));
-                                }
-                            }
-
-                            Ok(())
-                        }
-
                         {
                             let _lock2 = match _lock1 {
                                 Some(_) => None,
@@ -450,28 +453,30 @@ impl Journal {
                                 }
                             };
 
-                            match iterate(&persistor, state_new) {
-                                Ok(_) => match PERSISTOR.root_set(record, state_old, state_new) {
-                                    Ok(_) => {
-                                        warn_on_error_result(query, output.as_str());
-                                        debug!(
-                                            "Completed ({:?}) {} -> {}",
-                                            start.elapsed(),
-                                            query.chars().take(128).collect::<String>(),
-                                            output,
-                                        );
-                                        return output;
-                                    }
-                                    Err(_) => {
-                                        info!(
-                                            "Rerunning (x{}) due to concurrency collision: {}",
-                                            runs, query
-                                        );
-                                        continue;
-                                    }
-                                },
-                                Err(err) => {
-                                    panic!("{:?}", err);
+                            let overlay_source = OverlayPersistor {
+                                primary: persistor.clone(),
+                                overlay: overlay_persistor.clone(),
+                            };
+                            // Commits must see both the session graph and any cache-backed
+                            // overlay roots attached by strict cache hits in this session.
+                            match PERSISTOR.root_set(record, state_old, state_new, &overlay_source) {
+                                Ok(_) => {
+                                    warn_on_error_result(query, output.as_str());
+                                    debug!(
+                                        "Completed ({:?}) {} -> {}",
+                                        start.elapsed(),
+                                        query.chars().take(128).collect::<String>(),
+                                        output,
+                                    );
+                                    return output;
+                                }
+                                Err(_) => {
+                                    info!(
+                                        "Rerunning (x{}) due to concurrency collision: {}",
+                                        runs,
+                                        query.chars().take(128).collect::<String>(),
+                                    );
+                                    continue;
                                 }
                             }
                         }
@@ -479,7 +484,8 @@ impl Journal {
                     false => {
                         info!(
                             "Rerunning (x{}) due to concurrency collision: {}",
-                            runs, query
+                            runs,
+                            query.chars().take(128).collect::<String>(),
                         );
                         continue;
                     }
@@ -489,7 +495,7 @@ impl Journal {
     }
 }
 
-unsafe fn sync_error(sc: *mut s7::s7_scheme, string: &str) -> s7::s7_pointer {
+pub(crate) unsafe fn sync_error(sc: *mut s7::s7_scheme, string: &str) -> s7::s7_pointer {
     unsafe {
         let c_string = CString::new(string).expect("Failed to create CString from string");
 
@@ -499,6 +505,16 @@ unsafe fn sync_error(sc: *mut s7::s7_scheme, string: &str) -> s7::s7_pointer {
             s7::s7_list(sc, 1, s7::s7_make_string(sc, c_string.as_ptr())),
         )
     }
+}
+
+fn mark_external_called(sc: *mut s7::s7_scheme) {
+    let mut sessions = SESSIONS
+        .write()
+        .expect("Failed to acquire sessions lock for external call tracking");
+    let session = sessions
+        .get_mut(&(sc as usize))
+        .expect("Session not found for given context");
+    session.external_called = true;
 }
 
 fn type_s7_sync_node() -> Type {
@@ -573,7 +589,7 @@ fn primitive_s7_sync_stub() -> Primitive {
             }
 
             let persistor = {
-                let session = SESSIONS.lock().expect("Failed to acquire SESSIONS lock");
+                let session = SESSIONS.read().expect("Failed to acquire SESSIONS lock");
                 &session
                     .get(&(sc as usize))
                     .expect("Session not found for given context")
@@ -639,53 +655,34 @@ fn primitive_s7_sync_hash() -> Primitive {
     )
 }
 
-fn primitive_s7_sync_node() -> Primitive {
+fn primitive_s7_sync_state() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         unsafe {
-            let digest = s7::s7_car(args);
-
-            if !s7::s7_is_byte_vector(digest) || s7::s7_vector_length(digest) as usize != SIZE {
-                return s7::s7_wrong_type_arg_error(
+            if !s7::s7_is_null(sc, args) {
+                return s7::s7_wrong_number_of_args_error(
                     sc,
-                    c"sync-node".as_ptr(),
-                    1,
-                    digest,
-                    c"a hash-sized byte-vector".as_ptr(),
+                    c"sync-state".as_ptr(),
+                    args,
                 );
             }
 
-            let mut word = [0 as u8; SIZE];
-            for i in 0..SIZE {
-                word[i] = s7::s7_byte_vector_ref(digest, i as i64);
-            }
-
-            let persistor = {
-                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-                &session
+            let state = {
+                let session = SESSIONS.read().expect("Failed to acquire sessions lock");
+                session
                     .get(&(sc as usize))
-                    .expect("Session not found for sync-node")
-                    .persistor
-                    .clone()
+                    .expect("Session not found for sync-state")
+                    .state
             };
 
-            if word == NULL
-                || persistor.branch_get(word).is_ok()
-                || PERSISTOR.branch_get(word).is_ok()
-                || persistor.stump_get(word).is_ok()
-                || PERSISTOR.stump_get(word).is_ok()
-            {
-                s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(word))
-            } else {
-                sync_error(sc, "Node does not exist in this journal (sync-node)")
-            }
+            s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(state))
         }
     }
 
     Primitive::new(
         code,
-        c"sync-node",
-        c"(sync-node digest) returns the sync pair defined by the digest",
-        1,
+        c"sync-state",
+        c"(sync-state) returns the current session state as a sync-node",
+        0,
         0,
         false,
     )
@@ -725,23 +722,24 @@ fn primitive_s7_sync_is_null() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         unsafe {
             let arg = s7::s7_car(args);
-            match sync_is_node(arg) || s7::s7_is_byte_vector(arg) {
-                false => s7::s7_wrong_type_arg_error(
+            if sync_is_node(arg) {
+                let word = sync_heap_read(s7::s7_c_object_value(arg));
+                for i in 0..SIZE {
+                    if word[i] != 0 {
+                        return s7::s7_make_boolean(sc, false);
+                    }
+                }
+                s7::s7_make_boolean(sc, true)
+            } else if s7::s7_is_byte_vector(arg) {
+                s7::s7_make_boolean(sc, false)
+            } else {
+                s7::s7_wrong_type_arg_error(
                     sc,
                     c"sync-null?".as_ptr(),
                     1,
                     arg,
                     c"a sync-node or byte-vector".as_ptr(),
-                ),
-                true => {
-                    let word = sync_heap_read(s7::s7_c_object_value(arg));
-                    for i in 0..SIZE {
-                        if word[i] != 0 {
-                            return s7::s7_make_boolean(sc, false);
-                        }
-                    }
-                    s7::s7_make_boolean(sc, true)
-                }
+                )
             }
         }
     }
@@ -749,7 +747,7 @@ fn primitive_s7_sync_is_null() -> Primitive {
     Primitive::new(
         code,
         c"sync-null?",
-        c"(sync-null? sp) returns a boolean indicating whether sp is equal to sync-null",
+        c"(sync-null? sp) returns whether a sync-node or byte-vector is equal to sync-null",
         1,
         0,
         false,
@@ -760,29 +758,19 @@ fn primitive_s7_sync_is_pair() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         unsafe {
             let arg = s7::s7_car(args);
-            match sync_is_node(arg) || s7::s7_is_byte_vector(arg) {
-                false => s7::s7_wrong_type_arg_error(
+            if sync_is_node(arg) {
+                let word = sync_heap_read(s7::s7_c_object_value(arg));
+                s7::s7_make_boolean(sc, sync_branch_children(sc, word).is_ok())
+            } else if s7::s7_is_byte_vector(arg) {
+                s7::s7_make_boolean(sc, false)
+            } else {
+                s7::s7_wrong_type_arg_error(
                     sc,
                     c"sync-pair?".as_ptr(),
                     1,
                     arg,
                     c"a sync-node or byte-vector".as_ptr(),
-                ),
-                true => {
-                    let word = sync_heap_read(s7::s7_c_object_value(arg));
-                    let persistor = {
-                        let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-                        &session
-                            .get(&(sc as usize))
-                            .expect("Session not found for sync-pair?")
-                            .persistor
-                            .clone()
-                    };
-                    s7::s7_make_boolean(
-                        sc,
-                        persistor.branch_get(word).is_ok() || PERSISTOR.branch_get(word).is_ok(),
-                    )
-                }
+                )
             }
         }
     }
@@ -790,7 +778,7 @@ fn primitive_s7_sync_is_pair() -> Primitive {
     Primitive::new(
         code,
         c"sync-pair?",
-        c"(sync-pair? sp) returns a boolean indicating whether sp is a pair",
+        c"(sync-pair? sp) returns whether a sync-node or byte-vector is a pair",
         1,
         0,
         false,
@@ -801,29 +789,23 @@ fn primitive_s7_sync_is_stub() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         unsafe {
             let arg = s7::s7_car(args);
-            match sync_is_node(arg) || s7::s7_is_byte_vector(arg) {
-                false => s7::s7_wrong_type_arg_error(
+            if sync_is_node(arg) {
+                let word = sync_heap_read(s7::s7_c_object_value(arg));
+                let (persistor, overlay) = session_storage_for(sc);
+                s7::s7_make_boolean(
+                    sc,
+                    resolve_stump_with(&persistor, overlay.as_ref(), word).is_some(),
+                )
+            } else if s7::s7_is_byte_vector(arg) {
+                s7::s7_make_boolean(sc, false)
+            } else {
+                s7::s7_wrong_type_arg_error(
                     sc,
                     c"sync-stub?".as_ptr(),
                     1,
                     arg,
                     c"a sync-node or byte-vector".as_ptr(),
-                ),
-                true => {
-                    let word = sync_heap_read(s7::s7_c_object_value(arg));
-                    let persistor = {
-                        let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-                        &session
-                            .get(&(sc as usize))
-                            .expect("Session not found for sync-stub?")
-                            .persistor
-                            .clone()
-                    };
-                    s7::s7_make_boolean(
-                        sc,
-                        persistor.stump_get(word).is_ok() || PERSISTOR.stump_get(word).is_ok(),
-                    )
-                }
+                )
             }
         }
     }
@@ -831,7 +813,7 @@ fn primitive_s7_sync_is_stub() -> Primitive {
     Primitive::new(
         code,
         c"sync-stub?",
-        c"(sync-stub? sp) returns a boolean indicating whether sp is a stub",
+        c"(sync-stub? sp) returns whether a sync-node or byte-vector is a stub",
         1,
         0,
         false,
@@ -841,23 +823,34 @@ fn primitive_s7_sync_is_stub() -> Primitive {
 fn primitive_s7_sync_digest() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         unsafe {
-            match sync_is_node(s7::s7_car(args)) {
-                false => s7::s7_wrong_type_arg_error(
+            let arg = s7::s7_car(args);
+            if sync_is_node(arg) {
+                let word = sync_heap_read(s7::s7_c_object_value(arg));
+                let digest = sync_digest(sc, word).expect("Failed to obtain digest");
+                let bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
+                for i in 0..SIZE {
+                    s7::s7_byte_vector_set(bv, i as i64, digest[i]);
+                }
+                bv
+            } else if s7::s7_is_byte_vector(arg) {
+                let mut data = vec![];
+                for i in 0..s7::s7_vector_length(arg) {
+                    data.push(s7::s7_byte_vector_ref(arg, i as i64))
+                }
+                let digest = Sha256::digest(data);
+                let bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
+                for i in 0..SIZE {
+                    s7::s7_byte_vector_set(bv, i as i64, digest[i]);
+                }
+                bv
+            } else {
+                s7::s7_wrong_type_arg_error(
                     sc,
                     c"sync-digest".as_ptr(),
                     1,
-                    s7::s7_car(args),
-                    c"a sync-node".as_ptr(),
-                ),
-                true => {
-                    let word = sync_heap_read(s7::s7_c_object_value(s7::s7_car(args)));
-                    let digest = sync_digest(sc, word).expect("Failed to obtain digest");
-                    let bv = s7::s7_make_byte_vector(sc, SIZE as i64, 1, std::ptr::null_mut());
-                    for i in 0..SIZE {
-                        s7::s7_byte_vector_set(bv, i as i64, digest[i]);
-                    }
-                    bv
-                }
+                    arg,
+                    c"a sync-node or byte-vector".as_ptr(),
+                )
             }
         }
     }
@@ -865,7 +858,7 @@ fn primitive_s7_sync_digest() -> Primitive {
     Primitive::new(
         code,
         c"sync-digest",
-        c"(sync-digest node) returns the the digest of a sync-node as a byte-vector",
+        c"(sync-digest value) returns the digest of a sync-node or byte-vector as a byte-vector",
         1,
         0,
         false,
@@ -876,7 +869,7 @@ fn primitive_s7_sync_cons() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         unsafe {
             let persistor = {
-                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                let session = SESSIONS.read().expect("Failed to acquire sessions lock");
                 &session
                     .get(&(sc as usize))
                     .expect("Session not found for sync-cons")
@@ -1007,7 +1000,7 @@ fn primitive_s7_sync_cut() -> Primitive {
 
             let handle_digest = |digest| {
                 let persistor = {
-                    let session = SESSIONS.lock().expect("Failed to acquire SESSIONS lock");
+                    let session = SESSIONS.read().expect("Failed to acquire SESSIONS lock");
                     &session
                         .get(&(sc as usize))
                         .expect("Session not found for given context")
@@ -1046,7 +1039,7 @@ fn primitive_s7_sync_cut() -> Primitive {
     Primitive::new(
         code,
         c"sync-cut",
-        c"(sync-cut value) obtain the stub of a sync pair or byte vector",
+        c"(sync-cut value) obtain the stub of a sync-node",
         1,
         0,
         false,
@@ -1203,6 +1196,8 @@ fn primitive_s7_sync_all() -> Primitive {
 fn primitive_s7_sync_call() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         unsafe {
+            mark_external_called(sc);
+
             let message_expr = s7::s7_car(args);
             let blocking = s7::s7_cadr(args);
 
@@ -1218,7 +1213,7 @@ fn primitive_s7_sync_call() -> Primitive {
 
             let record = match s7::s7_is_null(sc, s7::s7_cddr(args)) {
                 true => {
-                    let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
+                    let session = SESSIONS.read().expect("Failed to acquire sessions lock");
                     session
                         .get(&(sc as usize))
                         .expect("Session number not found in sessions map")
@@ -1283,9 +1278,176 @@ fn primitive_s7_sync_call() -> Primitive {
     )
 }
 
+fn primitive_s7_sync_eval() -> Primitive {
+    unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
+        unsafe {
+            let expression = s7::s7_gc_protect_via_stack(sc, s7::s7_car(args));
+            let strict = if s7::s7_is_null(sc, s7::s7_cdr(args)) {
+                true
+            } else {
+                let strict = s7::s7_cadr(args);
+                if !s7::s7_is_boolean(strict) {
+                    s7::s7_gc_unprotect_via_stack(sc, expression);
+                    return s7::s7_wrong_type_arg_error(
+                        sc,
+                        c"sync-eval".as_ptr(),
+                        2,
+                        strict,
+                        c"a boolean".as_ptr(),
+                    );
+                }
+                s7::s7_boolean(sc, strict)
+            };
+            if !sync_is_node(expression) {
+                s7::s7_gc_unprotect_via_stack(sc, expression);
+                return s7::s7_wrong_type_arg_error(
+                    sc,
+                    c"sync-eval".as_ptr(),
+                    1,
+                    expression,
+                    c"a sync-node".as_ptr(),
+                );
+            }
+
+            let expression_word = sync_heap_read(s7::s7_c_object_value(expression));
+            if strict {
+                if let Some(result) = strict_cache_get(sc, expression_word) {
+                    s7::s7_gc_unprotect_via_stack(sc, expression);
+                    return result;
+                }
+                let header_word = match sync_branch_children(sc, expression_word) {
+                    Ok((left, _)) => left,
+                    Err(err) => {
+                        s7::s7_gc_unprotect_via_stack(sc, expression);
+                        return sync_error(
+                            sc,
+                            format!("sync-eval first argument should be a sync-node with a byte-vector header ({})", err).as_str(),
+                        );
+                    }
+                };
+                let eval_env = strict_sync_eval_env_cached(sc);
+                let loader = match strict_loader_lookup(sc, header_word) {
+                    Some(loader) => loader,
+                    None => {
+                        let header = s7::s7_gc_protect_via_stack(
+                            sc,
+                            sync_cxr(
+                                sc,
+                                s7::s7_list(sc, 1, expression),
+                                c"sync-eval",
+                                |children| children.0,
+                            ),
+                        );
+                        if !s7::s7_is_byte_vector(header) {
+                            s7::s7_gc_unprotect_via_stack(sc, header);
+                            s7::s7_gc_unprotect_via_stack(sc, expression);
+                            return sync_error(sc, "sync-eval first argument should be a sync-node with a byte-vector header");
+                        }
+                        let mut bytes = vec![39];
+                        for i in 0..s7::s7_vector_length(header) {
+                            bytes.push(s7::s7_byte_vector_ref(header, i));
+                        }
+                        bytes.push(0);
+                        let loader_expr = match CString::from_vec_with_nul(bytes) {
+                            Ok(c_string) => s7::s7_gc_protect_via_stack(sc, s7::s7_eval_c_string(sc, c_string.as_ptr())),
+                            Err(_) => {
+                                s7::s7_gc_unprotect_via_stack(sc, header);
+                                s7::s7_gc_unprotect_via_stack(sc, expression);
+                                return s7::s7_error(
+                                    sc,
+                                    s7::s7_make_symbol(sc, c"encoding-error".as_ptr()),
+                                    s7::s7_list(
+                                        sc,
+                                        1,
+                                        s7::s7_make_string(sc, c"Byte vector string is malformed".as_ptr()),
+                                    ),
+                                );
+                            }
+                        };
+                        let loader = s7::s7_gc_protect_via_stack(sc, s7::s7_eval(sc, loader_expr, eval_env));
+                        let cached = strict_loader_cache_store(sc, header_word, loader);
+                        s7::s7_gc_unprotect_via_stack(sc, loader);
+                        s7::s7_gc_unprotect_via_stack(sc, loader_expr);
+                        s7::s7_gc_unprotect_via_stack(sc, header);
+                        cached
+                    }
+                };
+                let result = s7::s7_gc_protect_via_stack(
+                    sc,
+                    s7::s7_apply_function(sc, loader, s7::s7_list(sc, 1, expression)),
+                );
+                let cached = strict_cache_put(sc, expression_word, result);
+                s7::s7_gc_unprotect_via_stack(sc, expression);
+                s7::s7_gc_unprotect_via_stack(sc, result);
+                return cached;
+            } else {
+                let header = s7::s7_gc_protect_via_stack(
+                    sc,
+                    sync_cxr(
+                        sc,
+                        s7::s7_list(sc, 1, expression),
+                        c"sync-eval",
+                        |children| children.0,
+                    ),
+                );
+                if !s7::s7_is_byte_vector(header) {
+                    s7::s7_gc_unprotect_via_stack(sc, header);
+                    s7::s7_gc_unprotect_via_stack(sc, expression);
+                    return sync_error(sc, "sync-eval first argument should be a sync-node with a byte-vector header");
+                }
+                let mut bytes = vec![39];
+                for i in 0..s7::s7_vector_length(header) {
+                    bytes.push(s7::s7_byte_vector_ref(header, i));
+                }
+                bytes.push(0);
+                let loader_expr = match CString::from_vec_with_nul(bytes) {
+                    Ok(c_string) => s7::s7_gc_protect_via_stack(sc, s7::s7_eval_c_string(sc, c_string.as_ptr())),
+                    Err(_) => {
+                        s7::s7_gc_unprotect_via_stack(sc, header);
+                        s7::s7_gc_unprotect_via_stack(sc, expression);
+                        return s7::s7_error(
+                            sc,
+                            s7::s7_make_symbol(sc, c"encoding-error".as_ptr()),
+                            s7::s7_list(
+                                sc,
+                                1,
+                                s7::s7_make_string(sc, c"Byte vector string is malformed".as_ptr()),
+                            ),
+                        );
+                    }
+                };
+                let eval_env = s7::s7_gc_protect_via_stack(sc, s7::s7_curlet(sc));
+                let loader = s7::s7_gc_protect_via_stack(sc, s7::s7_eval(sc, loader_expr, eval_env));
+                let result = s7::s7_gc_protect_via_stack(
+                    sc,
+                    s7::s7_apply_function(sc, loader, s7::s7_list(sc, 1, expression)),
+                );
+                s7::s7_gc_unprotect_via_stack(sc, eval_env);
+                s7::s7_gc_unprotect_via_stack(sc, loader);
+                s7::s7_gc_unprotect_via_stack(sc, loader_expr);
+                s7::s7_gc_unprotect_via_stack(sc, header);
+                s7::s7_gc_unprotect_via_stack(sc, expression);
+                s7::s7_gc_unprotect_via_stack(sc, result);
+                return result;
+            };
+        }
+    }
+
+    Primitive::new(
+        code,
+        c"sync-eval",
+        c"(sync-eval node (strict? #t)) evaluate a sync-node strictly, or load it when strict? is #f",
+        1,
+        3,
+        false,
+    )
+}
+
 fn primitive_s7_sync_http() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         unsafe {
+            mark_external_called(sc);
+
             let vec2s7 = |vector: Vec<u8>| {
                 let bv = s7::s7_make_byte_vector(sc, vector.len() as i64, 1, std::ptr::null_mut());
                 for i in 0..vector.len() {
@@ -1304,8 +1466,8 @@ fn primitive_s7_sync_http() -> Primitive {
             };
 
             let cache_mutex = {
-                let session = SESSIONS.lock().expect("Failed to acquire sessions lock");
-                &session
+                let session = SESSIONS.read().expect("Failed to acquire sessions lock");
+                session
                     .get(&(sc as usize))
                     .expect("Session ID not found in active sessions")
                     .cache
@@ -1380,6 +1542,8 @@ fn primitive_s7_sync_http() -> Primitive {
 fn primitive_s7_sync_remote() -> Primitive {
     unsafe extern "C" fn code(sc: *mut s7::s7_scheme, args: s7::s7_pointer) -> s7::s7_pointer {
         unsafe {
+            mark_external_called(sc);
+
             let vec2s7 = |mut vector: Vec<u8>| {
                 vector.insert(0, 39); // add quote character so that it evaluates correctly
                 vector.push(0);
@@ -1393,8 +1557,8 @@ fn primitive_s7_sync_remote() -> Primitive {
             let body = obj2str(sc, s7::s7_cadr(args));
 
             let cache_mutex = {
-                let session = SESSIONS.lock().expect("Failed to acquire session lock");
-                &session
+                let session = SESSIONS.read().expect("Failed to acquire session lock");
+                session
                     .get(&(sc as usize))
                     .expect("Failed to get session from map")
                     .cache
@@ -1466,7 +1630,7 @@ unsafe fn sync_heap_make(word: Word) -> *mut libc::c_void {
     }
 }
 
-unsafe fn sync_heap_read(ptr: *mut libc::c_void) -> Word {
+pub(crate) unsafe fn sync_heap_read(ptr: *mut libc::c_void) -> Word {
     unsafe {
         std::slice::from_raw_parts_mut(ptr as *mut u8, SIZE)
             .try_into()
@@ -1480,7 +1644,7 @@ unsafe fn sync_heap_free(ptr: *mut libc::c_void) {
     }
 }
 
-unsafe fn sync_is_node(obj: s7::s7_pointer) -> bool {
+pub(crate) unsafe fn sync_is_node(obj: s7::s7_pointer) -> bool {
     unsafe { s7::s7_is_c_object(obj) && s7::s7_c_object_type(obj) == SYNC_NODE_TAG }
 }
 
@@ -1493,15 +1657,7 @@ unsafe fn sync_cxr(
     unsafe {
         let node = s7::s7_car(args);
         let word = sync_heap_read(s7::s7_c_object_value(node));
-
-        let persistor = {
-            let session = SESSIONS.lock().expect("Failed to acquire SESSIONS lock");
-            &session
-                .get(&(sc as usize))
-                .expect("Session not found for given context")
-                .persistor
-                .clone()
-        };
+        let (persistor, overlay) = session_storage_for(sc);
 
         let child_return = |word| {
             let node_return = |word| s7::s7_make_c_object(sc, SYNC_NODE_TAG, sync_heap_make(word));
@@ -1515,45 +1671,53 @@ unsafe fn sync_cxr(
             };
 
             if word == NULL {
-                node_return(word)
-            } else if let Ok(_) = persistor.branch_get(word) {
-                node_return(word)
-            } else if let Ok(_) = PERSISTOR.branch_get(word) {
-                node_return(word)
-            } else if let Ok(content) = persistor.leaf_get(word) {
-                vector_return(content)
-            } else if let Ok(content) = PERSISTOR.leaf_get(word) {
-                vector_return(content)
-            } else if let Ok(_) = persistor.stump_get(word) {
-                node_return(word)
-            } else if let Ok(_) = PERSISTOR.stump_get(word) {
-                node_return(word)
-            } else {
-                sync_error(
+                return node_return(word);
+            }
+
+            match resolve_node_with(&persistor, overlay.as_ref(), word) {
+                Some(ResolvedNode::Branch((left, right, digest), ResolveSource::Global)) => {
+                    persistor
+                        .branch_set(left, right, digest)
+                        .expect("Failed to add branch to session persistor");
+                    node_return(word)
+                }
+                Some(ResolvedNode::Branch(_, _)) => node_return(word),
+                Some(ResolvedNode::Leaf(content, ResolveSource::Global)) => {
+                    persistor
+                        .leaf_set(content.clone())
+                        .expect("Failed to add leaf to session persistor");
+                    vector_return(content)
+                }
+                Some(ResolvedNode::Leaf(content, _)) => vector_return(content),
+                Some(ResolvedNode::Stump(digest, ResolveSource::Global)) => {
+                    persistor
+                        .stump_set(digest)
+                        .expect("Failed to add stump to session persistor");
+                    node_return(word)
+                }
+                Some(ResolvedNode::Stump(_, _)) => node_return(word),
+                None => sync_error(
                     sc,
                     format!(
                         "Cannot retrieve items for node that is not a sync-pair ({})",
                         name.to_string_lossy()
                     )
                     .as_str(),
-                )
+                ),
             }
         };
 
         match sync_is_node(node) {
-            true => match persistor.branch_get(word) {
-                Ok((left, right, _)) => child_return(selector((left, right))),
-                Err(_) => match PERSISTOR.branch_get(word) {
-                    Ok((left, right, _)) => child_return(selector((left, right))),
-                    Err(_) => sync_error(
-                        sc,
-                        format!(
-                            "Journal cannot retrieve leaf byte-vector ({})",
-                            name.to_string_lossy()
-                        )
-                        .as_str(),
-                    ),
-                },
+            true => match resolve_branch_with(&persistor, overlay.as_ref(), word) {
+                Some(((left, right, _), _)) => child_return(selector((left, right))),
+                None => sync_error(
+                    sc,
+                    format!(
+                        "Journal cannot retrieve leaf byte-vector ({})",
+                        name.to_string_lossy()
+                    )
+                    .as_str(),
+                ),
             },
             false => {
                 s7::s7_wrong_type_arg_error(sc, name.as_ptr(), 1, node, c"a sync-node".as_ptr())
@@ -1563,30 +1727,156 @@ unsafe fn sync_cxr(
 }
 
 unsafe fn sync_digest(sc: *mut s7::s7_scheme, word: Word) -> Result<Word, String> {
-    let persistor = {
-        let session = SESSIONS.lock().expect("Failed to acquire SESSIONS lock");
-        &session
-            .get(&(sc as usize))
-            .expect("Session not found for given context")
-            .persistor
-            .clone()
-    };
+    let (persistor, overlay) = session_storage_for(sc);
 
     if word == NULL {
         Ok(NULL)
-    } else if let Ok((_, _, digest)) = persistor.branch_get(word) {
-        Ok(digest)
-    } else if let Ok((_, _, digest)) = PERSISTOR.branch_get(word) {
-        Ok(digest)
-    } else if let Ok(_) = persistor.leaf_get(word) {
-        Ok(word)
-    } else if let Ok(_) = PERSISTOR.leaf_get(word) {
-        Ok(word)
-    } else if let Ok(digest) = persistor.stump_get(word) {
-        Ok(digest)
-    } else if let Ok(digest) = PERSISTOR.stump_get(word) {
-        Ok(digest)
     } else {
-        Err("Digest not found in persistor".to_string())
+        match resolve_node_with(&persistor, overlay.as_ref(), word) {
+            Some(ResolvedNode::Branch((_, _, digest), _)) => Ok(digest),
+            Some(ResolvedNode::Leaf(_, _)) => Ok(word),
+            Some(ResolvedNode::Stump(digest, _)) => Ok(digest),
+            None => Err("Digest not found in persistor".to_string()),
+        }
+    }
+}
+
+unsafe fn sync_branch_children(sc: *mut s7::s7_scheme, word: Word) -> Result<(Word, Word), String> {
+    let (persistor, overlay) = session_storage_for(sc);
+
+    if let Some(((left, right, _), _)) = resolve_branch_with(&persistor, overlay.as_ref(), word) {
+        Ok((left, right))
+    } else {
+        Err("Node is not a sync-pair".to_string())
+    }
+}
+
+pub(crate) fn session_persistor_for(sc: *mut s7::s7_scheme) -> MemoryPersistor {
+    let session = SESSIONS.read().expect("Failed to acquire SESSIONS lock");
+    session
+        .get(&(sc as usize))
+        .expect("Session not found for given context")
+        .persistor
+        .clone()
+}
+
+fn session_storage_for(sc: *mut s7::s7_scheme) -> (MemoryPersistor, Option<MemoryPersistor>) {
+    let session = SESSIONS.read().expect("Failed to acquire SESSIONS lock");
+    let session = session
+        .get(&(sc as usize))
+        .expect("Session not found for given context");
+    (
+        session.persistor.clone(),
+        session.strict_overlay_persistor.clone(),
+    )
+}
+
+unsafe fn strict_sync_eval_env(sc: *mut s7::s7_scheme) -> s7::s7_pointer {
+    unsafe {
+        let unsafe_names = [
+            c"curlet",
+            c"cutlet",
+            c"funclet",
+            c"inlet",
+            c"load",
+            c"open-input-string",
+            c"openlet",
+            c"owlet",
+            c"outlet",
+            c"read",
+            c"varlet",
+            c"sync-all",
+            c"sync-call",
+            c"sync-create",
+            c"sync-delete",
+            c"sync-state",
+            c"sync-http",
+            c"sync-remote",
+            c"random-byte-vector",
+        ];
+        let mut form = String::from("(let ((e (sublet (rootlet))))");
+        for name in unsafe_names {
+            let symbol = name.to_string_lossy();
+            form.push_str(&format!(
+                " (varlet e '{0} (lambda args (error 'unsafe-error \"{0} unavailable in strict sync-eval\")))",
+                symbol
+            ));
+        }
+        form.push_str(" e)");
+        let c_form = CString::new(form).expect("Failed to build strict sync-eval environment form");
+        s7::s7_eval_c_string(sc, c_form.as_ptr())
+    }
+}
+
+unsafe fn strict_sync_eval_env_cached(sc: *mut s7::s7_scheme) -> s7::s7_pointer {
+    unsafe {
+        if let Some(loc) = {
+            let sessions = SESSIONS.read().expect("Failed to acquire sessions lock");
+            sessions
+                .get(&(sc as usize))
+                .and_then(|session| session.strict_env_loc)
+        } {
+            return s7::s7_gc_protected_at(sc, loc);
+        }
+
+        let env = strict_sync_eval_env(sc);
+        let loc = s7::s7_gc_protect(sc, env);
+
+        let existing = {
+            let mut sessions = SESSIONS.write().expect("Failed to acquire sessions lock");
+            let session = sessions
+                .get_mut(&(sc as usize))
+                .expect("Session not found for strict env caching");
+            match session.strict_env_loc {
+                Some(existing) => Some(existing),
+                None => {
+                    session.strict_env_loc = Some(loc);
+                    None
+                }
+            }
+        };
+
+        if let Some(existing) = existing {
+            s7::s7_gc_unprotect_at(sc, loc);
+            s7::s7_gc_protected_at(sc, existing)
+        } else {
+            env
+        }
+    }
+}
+
+unsafe fn strict_loader_lookup(sc: *mut s7::s7_scheme, header_word: Word) -> Option<s7::s7_pointer> {
+    unsafe {
+        let loc = {
+            let sessions = SESSIONS.read().expect("Failed to acquire sessions lock");
+            sessions
+                .get(&(sc as usize))
+                .and_then(|session| session.strict_loader_locs.get(&header_word).copied())
+        }?;
+        Some(s7::s7_gc_protected_at(sc, loc))
+    }
+}
+
+unsafe fn strict_loader_cache_store(
+    sc: *mut s7::s7_scheme,
+    header_word: Word,
+    loader: s7::s7_pointer,
+) -> s7::s7_pointer {
+    unsafe {
+        let loc = s7::s7_gc_protect(sc, loader);
+        let existing = {
+            let mut sessions = SESSIONS.write().expect("Failed to acquire sessions lock");
+            let session = sessions
+                .get_mut(&(sc as usize))
+                .expect("Session not found for strict loader caching");
+            session.strict_loader_locs.insert(header_word, loc)
+        };
+
+        if let Some(existing) = existing {
+            s7::s7_gc_unprotect_at(sc, loc);
+            s7::s7_gc_protected_at(sc, existing)
+        } else {
+            loader
+        }
     }
 }
